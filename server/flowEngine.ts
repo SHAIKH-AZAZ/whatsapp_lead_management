@@ -133,10 +133,11 @@ export async function processFlowRun(
         nextNodeId = findNextNodeId(node.id, edges);
         break;
 
-      case "condition":
+      case "condition": {
         const result = await evaluateCondition(supabase, flowRun, node.data);
         nextNodeId = findNextNodeId(node.id, edges, result ? "true" : "false");
         break;
+      }
     }
 
     if (nextNodeId) {

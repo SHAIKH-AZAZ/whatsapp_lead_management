@@ -129,7 +129,7 @@ export default function ConnectWhatsApp() {
         window.sessionStorage.removeItem("wabiz_meta_signup_state");
         setSearchParams({}, { replace: true });
       });
-  }, [searchParams, setSearchParams]);
+  }, [searchParams, setSearchParams, connectWhatsApp]);
 
   const handleLaunchEmbeddedSignup = () => {
     if (!hasMetaEmbeddedSignupConfig) {
