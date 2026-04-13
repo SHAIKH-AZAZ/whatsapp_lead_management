@@ -1,0 +1,12 @@
+node_modules
+dist
+.env
+.env.example
+dev.db
+.git
+.github
+Dockerfile
+nixpacks.toml
+railway.json
+.vscode
+*.log
