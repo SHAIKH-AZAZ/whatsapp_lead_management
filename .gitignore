@@ -22,7 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-
+bun.lock
 # Environment variables
 .env
 .env.local
