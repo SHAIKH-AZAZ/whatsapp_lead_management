@@ -119,6 +119,7 @@ const WorkflowBuilder = () => {
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
+  const [flowName, setFlowName] = useState("Lead Nurture Flow");
 
   const onConnect = useCallback(
     (params: Connection) => setEdges((eds) => addEdge(params, eds)),
@@ -130,6 +131,14 @@ const WorkflowBuilder = () => {
   };
 
   const handleSave = async () => {
+    if (!flowName.trim()) {
+      toast.error("Please enter a flow name before saving.");
+      return;
+    }
+    if (nodes.length === 0) {
+      toast.error("Add at least one node before saving.");
+      return;
+    }
     try {
       const baseUrl = import.meta.env.VITE_API_BASE_URL?.trim() || "http://localhost:3001";
       const res = await fetch(`${baseUrl}/automation/definitions`, {
@@ -138,7 +147,7 @@ const WorkflowBuilder = () => {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          name: "Lead Nurture Flow",
+          name: flowName.trim(),
           nodes,
           edges,
         }),
@@ -146,7 +155,8 @@ const WorkflowBuilder = () => {
       if (res.ok) {
         toast.success("Flow saved successfully!");
       } else {
-        toast.error("Failed to save flow.");
+        const payload = await res.json().catch(() => ({})) as { error?: string };
+        toast.error(payload.error || "Failed to save flow.");
       }
     } catch (err) {
       console.error(err);
@@ -183,7 +193,12 @@ const WorkflowBuilder = () => {
             <Button variant="ghost" size="icon" onClick={() => navigate("/automations")}>
               <ArrowLeft size={20} />
             </Button>
-            <h1 className="text-xl font-bold">Automation Builder</h1>
+            <Input
+              value={flowName}
+              onChange={(e) => setFlowName(e.target.value)}
+              placeholder="Flow name"
+              className="w-56 text-base font-bold border-0 shadow-none focus-visible:ring-0 px-0"
+            />
           </div>
           <div className="flex items-center gap-2">
             <Button variant="outline" onClick={() => navigate("/automations")}>Cancel</Button>

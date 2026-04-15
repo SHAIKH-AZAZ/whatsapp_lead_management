@@ -48,8 +48,9 @@ export default function AutomationsPage() {
         },
       ]),
     ));
+  }, [automations]);
 
-    // Fetch custom flows
+  useEffect(() => {
     const fetchCustomFlows = async () => {
       try {
         const baseUrl = import.meta.env.VITE_API_BASE_URL?.trim() || "http://localhost:3001";
@@ -62,8 +63,8 @@ export default function AutomationsPage() {
         console.error(err);
       }
     };
-    fetchCustomFlows();
-  }, [automations]);
+    void fetchCustomFlows();
+  }, []);
 
   const sortedEvents = useMemo(() => automationEvents.slice(0, 8), [automationEvents]);
 
@@ -150,15 +151,15 @@ export default function AutomationsPage() {
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <h3 className="font-bold">{flow.name}</h3>
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full ${flow.is_active ? 'bg-green-100 text-green-700' : 'bg-muted text-muted-foreground'}`}>
-                      {flow.is_active ? 'Active' : 'Draft'}
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full ${flow.isActive ? 'bg-green-100 text-green-700' : 'bg-muted text-muted-foreground'}`}>
+                      {flow.isActive ? 'Active' : 'Draft'}
                     </span>
                   </div>
                   <p className="text-sm text-muted-foreground line-clamp-2">{flow.description || 'No description provided.'}</p>
                 </div>
                 <div className="mt-4 flex items-center gap-4 text-xs text-muted-foreground">
-                  <span>{flow.nodes?.length || 0} nodes</span>
-                  <span>{new Date(flow.updated_at).toLocaleDateString()}</span>
+                  <span>{Array.isArray(flow.nodes) ? flow.nodes.length : 0} nodes</span>
+                  <span>{new Date(flow.updatedAt).toLocaleDateString()}</span>
                 </div>
               </Card>
             )) : (

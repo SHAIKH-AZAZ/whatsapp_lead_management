@@ -1458,24 +1458,34 @@ app.post("/automation/definitions", async (req, res) => {
     const { workspaceId } = context;
     const { id, name, description, nodes, edges, is_active } = req.body;
 
-    const data = await prisma.automationFlowDefinition.upsert({
-      where: { id: id || "new-definition-id" },
-      update: {
-        name,
-        description,
-        nodes: nodes || [],
-        edges: edges || [],
-        isActive: is_active ?? true,
-      },
-      create: {
-        workspaceId: workspaceId,
-        name,
-        description,
-        nodes: nodes || [],
-        edges: edges || [],
-        isActive: is_active ?? true,
-      },
-    });
+    if (!name?.trim()) {
+      return res.status(400).json({ error: "Flow name is required." });
+    }
+
+    let data;
+    if (id) {
+      data = await prisma.automationFlowDefinition.update({
+        where: { id },
+        data: {
+          name: name.trim(),
+          description,
+          nodes: nodes || [],
+          edges: edges || [],
+          isActive: is_active ?? true,
+        },
+      });
+    } else {
+      data = await prisma.automationFlowDefinition.create({
+        data: {
+          workspaceId,
+          name: name.trim(),
+          description,
+          nodes: nodes || [],
+          edges: edges || [],
+          isActive: is_active ?? true,
+        },
+      });
+    }
 
     res.json(data);
   } catch (error: any) {
@@ -1509,7 +1519,17 @@ app.post("/automation/process-flows", async (req, res, next) => {
     }
 
     for (const flowRun of dueFlows) {
-      await processFlowRun(flowRun as any);
+      await processFlowRun({
+        id: flowRun.id,
+        workspaceId: flowRun.workspaceId,
+        leadId: flowRun.leadId,
+        conversationId: flowRun.conversationId,
+        flowDefinitionId: flowRun.flowDefinitionId,
+        currentNodeId: flowRun.currentNodeId,
+        status: flowRun.status as "active" | "completed" | "failed" | "paused",
+        retryCount: flowRun.retryCount,
+        scheduledAt: flowRun.scheduledAt,
+      });
     }
 
     res.json({ result: { ok: true, message: `Processed ${dueFlows.length} automation flow(s).` } });
@@ -1554,14 +1574,19 @@ app.post("/automation/lead-contacted", async (req, res, next) => {
 
     let conversationId = lead.conversationId;
     if (!conversationId) {
+      // Look up contact by phone so the conversation is properly linked.
+      const contact = await prisma.contact.findFirst({
+        where: { workspaceId: workspaceContext.workspaceId, phone: lead.phone },
+        select: { id: true },
+      });
       const conversation = await prisma.conversation.create({
         data: {
           workspaceId: workspaceContext.workspaceId,
-          contactId: null,
+          contactId: contact?.id ?? null,
           phone: lead.phone,
           displayName: lead.fullName,
           status: AppConversationStatus.open,
-          source: lead.source as AppLeadSource,
+          source: lead.source,
           lastMessagePreview: "",
           lastMessageAt: new Date(),
           unreadCount: 0,

@@ -251,6 +251,7 @@ async function handleFlowMessageSend(flowRun: FlowRun, config: any) {
   ]);
 
   if (!connection || !auth || !lead) throw new Error("Missing flow prerequisites.");
+  if (!lead.phone?.trim()) throw new Error(`Lead ${flowRun.leadId} has no phone number; cannot send template.`);
 
   await sendMetaTemplateMessage({
     accessToken: auth.accessToken,
@@ -279,6 +280,7 @@ async function handleFlowInteractiveSend(flowRun: FlowRun, config: any) {
   ]);
 
   if (!connection || !auth || !lead) throw new Error("Missing flow prerequisites.");
+  if (!lead.phone?.trim()) throw new Error(`Lead ${flowRun.leadId} has no phone number; cannot send interactive message.`);
 
   await sendMetaInteractiveMessage({
     accessToken: auth.accessToken,
