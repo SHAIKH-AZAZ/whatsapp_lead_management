@@ -2,7 +2,17 @@ import "dotenv/config";
 import { createHash } from "node:crypto";
 import cors from "cors";
 import express from "express";
-import { CampaignStatus, ConnectionStatus, MessageTemplateCategory, TemplateStatus } from "@prisma/client";
+import { 
+  CampaignStatus, 
+  ConnectionStatus, 
+  MessageTemplateCategory, 
+  TemplateStatus,
+  AppAutomationRuleType,
+  AppConversationStatus,
+  AppMessageDirection,
+  AppLeadStatus,
+  AppLeadSource
+} from "@prisma/client";
 import { z } from "zod";
 import { COST_PER_MESSAGE } from "../src/lib/api/types";
 import { prisma } from "./prisma";
@@ -178,26 +188,26 @@ type AutomationRuleRecord = {
 };
 
 async function getEnabledAutomationRule(
-  supabase: ReturnType<typeof getSupabaseAdmin>,
   workspaceId: string,
-  ruleType: AutomationRuleRecord["rule_type"],
+  ruleType: AppAutomationRuleType,
 ) {
-  const { data } = await supabase
-    .from("automation_rules")
-    .select("id, rule_type, enabled, config")
-    .eq("workspace_id", workspaceId)
-    .eq("rule_type", ruleType)
-    .eq("enabled", true)
-    .maybeSingle();
+  const rule = await prisma.automationRule.findUnique({
+    where: {
+      workspaceId_ruleType: {
+        workspaceId,
+        ruleType,
+      },
+    },
+  });
 
-  return (data as AutomationRuleRecord | null) ?? null;
+  if (!rule || !rule.enabled) return null;
+  return rule;
 }
 
 async function logAutomationEvent(
-  supabase: ReturnType<typeof getSupabaseAdmin>,
   input: {
     workspaceId: string;
-    ruleType: AutomationRuleRecord["rule_type"];
+    ruleType: AppAutomationRuleType;
     conversationId?: string | null;
     leadId?: string | null;
     status: "triggered" | "skipped" | "failed";
@@ -205,14 +215,16 @@ async function logAutomationEvent(
     payload?: Record<string, unknown>;
   },
 ) {
-  await supabase.from("automation_events").insert({
-    workspace_id: input.workspaceId,
-    rule_type: input.ruleType,
-    conversation_id: input.conversationId ?? null,
-    lead_id: input.leadId ?? null,
-    status: input.status,
-    summary: input.summary,
-    payload: input.payload ?? {},
+  await prisma.automationEvent.create({
+    data: {
+      workspaceId: input.workspaceId,
+      ruleType: input.ruleType,
+      conversationId: input.conversationId ?? null,
+      leadId: input.leadId ?? null,
+      status: input.status,
+      summary: input.summary,
+      payload: (input.payload as any) ?? {},
+    },
   });
 }
 
@@ -223,20 +235,17 @@ function resolveAutomationMessage(template: string, input: { contactName: string
 }
 
 async function getActiveMetaAuthorization(
-  supabase: ReturnType<typeof getSupabaseAdmin>,
   workspaceId: string,
 ) {
-  const { data: authorization } = await supabase
-    .from("meta_authorizations")
-    .select("access_token, expires_at")
-    .eq("workspace_id", workspaceId)
-    .maybeSingle();
+  const authorization = await prisma.metaAuthorization.findUnique({
+    where: { workspaceId },
+  });
 
-  if (!authorization?.access_token) {
+  if (!authorization?.accessToken) {
     throw new Error("No stored Meta authorization found for this workspace. Reconnect WhatsApp to continue.");
   }
 
-  if (authorization.expires_at && new Date(authorization.expires_at).getTime() <= Date.now()) {
+  if (authorization.expiresAt && new Date(authorization.expiresAt).getTime() <= Date.now()) {
     throw new Error("Meta authorization has expired for this workspace. Reconnect WhatsApp before sending again.");
   }
 
@@ -256,7 +265,6 @@ function getErrorMessage(error: unknown) {
 }
 
 async function logOperationalEvent(
-  supabase: ReturnType<typeof getSupabaseAdmin>,
   input: {
     workspaceId: string;
     eventType: string;
@@ -265,17 +273,18 @@ async function logOperationalEvent(
     payload?: Record<string, unknown>;
   },
 ) {
-  await supabase.from("operational_logs").insert({
-    workspace_id: input.workspaceId,
-    event_type: input.eventType,
-    level: input.level,
-    summary: input.summary,
-    payload: input.payload ?? {},
+  await prisma.operationalLog.create({
+    data: {
+      workspaceId: input.workspaceId,
+      eventType: input.eventType,
+      level: input.level,
+      summary: input.summary,
+      payload: (input.payload as any) ?? {},
+    },
   });
 }
 
 async function logFailedSend(
-  supabase: ReturnType<typeof getSupabaseAdmin>,
   input: {
     workspaceId: string;
     channel: "campaign" | "reply" | "automation" | "template";
@@ -289,18 +298,20 @@ async function logFailedSend(
   },
 ) {
   await Promise.all([
-    supabase.from("failed_send_logs").insert({
-      workspace_id: input.workspaceId,
-      channel: input.channel,
-      target_type: input.targetType,
-      target_id: input.targetId ?? null,
-      destination: input.destination,
-      template_name: input.templateName ?? null,
-      message_body: input.messageBody ?? null,
-      error_message: input.errorMessage,
-      payload: input.payload ?? {},
+    prisma.failedSendLog.create({
+      data: {
+        workspaceId: input.workspaceId,
+        channel: input.channel,
+        targetType: input.targetType,
+        targetId: input.targetId ?? null,
+        destination: input.destination,
+        templateName: input.templateName ?? null,
+        messageBody: input.messageBody ?? null,
+        errorMessage: input.errorMessage,
+        payload: (input.payload as any) ?? {},
+      },
     }),
-    logOperationalEvent(supabase, {
+    logOperationalEvent({
       workspaceId: input.workspaceId,
       eventType: `${input.channel}_send_failed`,
       level: "error",
@@ -321,37 +332,38 @@ function fingerprintWebhookEvent(event: SummarizedMetaWebhookEvent) {
 }
 
 async function claimWebhookEvent(
-  supabase: ReturnType<typeof getSupabaseAdmin>,
   event: SummarizedMetaWebhookEvent,
 ) {
-  const { error } = await supabase.from("processed_webhook_events").insert({
-    fingerprint: fingerprintWebhookEvent(event),
-    event_type: event.field,
-    workspace_id: null,
-  });
-
-  if (!error) {
+  try {
+    await prisma.processedWebhookEvent.create({
+      data: {
+        fingerprint: fingerprintWebhookEvent(event),
+        eventType: event.field,
+        workspaceId: null,
+      },
+    });
     return true;
+  } catch (error) {
+    if (typeof error === "object" && error && "code" in error && error.code === "P2002") {
+      return false;
+    }
+    throw error;
   }
-
-  if (typeof error === "object" && error && "code" in error && error.code === "23505") {
-    return false;
-  }
-
-  throw error;
 }
 
 async function sendWorkspaceAutomationMessage(
-  supabase: ReturnType<typeof getSupabaseAdmin>,
   input: {
     workspaceId: string;
     to: string;
     body: string;
   },
 ) {
-  const [authorization, { data: connection }] = await Promise.all([
-    getActiveMetaAuthorization(supabase, input.workspaceId),
-    supabase.from("whatsapp_connections").select("phone_number_id").eq("workspace_id", input.workspaceId).maybeSingle(),
+  const [authorization, connection] = await Promise.all([
+    getActiveMetaAuthorization(input.workspaceId),
+    prisma.whatsAppConnection.findUnique({
+      where: { workspaceId: input.workspaceId },
+      select: { phone_number_id: true },
+    }),
   ]);
 
   if (!connection?.phone_number_id) {
@@ -359,41 +371,44 @@ async function sendWorkspaceAutomationMessage(
   }
 
   return sendMetaTextMessage({
-    accessToken: authorization.access_token,
+    accessToken: authorization.accessToken,
     phoneNumberId: connection.phone_number_id,
     to: input.to,
     body: input.body,
   });
 }
 
-async function persistWhatsAppWebhookEvent(supabase: ReturnType<typeof getSupabaseAdmin>, event: SummarizedWhatsAppWebhookEvent) {
+async function persistWhatsAppWebhookEvent(event: SummarizedWhatsAppWebhookEvent) {
   if (!event.phoneNumberId) {
     return;
   }
 
-  const { data: connection } = await supabase
-    .from("whatsapp_connections")
-    .select("workspace_id")
-    .eq("phone_number_id", event.phoneNumberId)
-    .maybeSingle();
+  const connection = await prisma.whatsAppConnection.findUnique({
+    where: { phone_number_id: event.phoneNumberId },
+    select: { workspaceId: true },
+  });
 
-  const workspaceId = connection?.workspace_id ?? null;
+  const workspaceId = connection?.workspaceId ?? null;
   if (!workspaceId) {
-    await supabase.from("meta_webhook_events").insert({
-      workspace_id: null,
-      event_type: event.field,
-      payload: event,
+    await prisma.metaWebhookEvent.create({
+      data: {
+        workspaceId: null,
+        eventType: event.field,
+        payload: event as any,
+      },
     });
     return;
   }
 
-  await supabase.from("meta_webhook_events").insert({
-    workspace_id: workspaceId,
-    event_type: event.field,
-    payload: event,
+  await prisma.metaWebhookEvent.create({
+    data: {
+      workspaceId: workspaceId,
+      eventType: event.field,
+      payload: event as any,
+    },
   });
 
-  await logOperationalEvent(supabase, {
+  await logOperationalEvent({
     workspaceId,
     eventType: "meta_webhook_received",
     level: "info",
@@ -409,74 +424,82 @@ async function persistWhatsAppWebhookEvent(supabase: ReturnType<typeof getSupaba
       continue;
     }
 
-    const { data: contact } = await supabase
-      .from("contacts")
-      .select("id, name")
-      .eq("workspace_id", workspaceId)
-      .eq("phone", inboundMessage.from)
-      .maybeSingle();
+    const contact = await prisma.contact.findFirst({
+      where: {
+        workspaceId: workspaceId,
+        phone: inboundMessage.from,
+      },
+      select: { id: true, name: true },
+    });
 
     const displayName = contact?.name ?? inboundMessage.from;
 
-    const { data: existingConversation } = await supabase
-      .from("conversations")
-      .select("id, unread_count")
-      .eq("workspace_id", workspaceId)
-      .eq("phone", inboundMessage.from)
-      .maybeSingle();
+    const existingConversation = await prisma.conversation.findFirst({
+      where: {
+        workspaceId: workspaceId,
+        phone: inboundMessage.from,
+      },
+      select: { id: true, unreadCount: true },
+    });
 
-    const conversationPayload = {
-      workspace_id: workspaceId,
-      contact_id: contact?.id ?? null,
+    const lastMessageAt = inboundMessage.timestamp 
+      ? new Date(Number(inboundMessage.timestamp) * 1000) 
+      : new Date();
+
+    const conversationData = {
+      workspaceId: workspaceId,
+      contactId: contact?.id ?? null,
       phone: inboundMessage.from,
-      display_name: displayName,
-      status: "open",
-      source: "whatsapp_inbound",
-      last_message_preview: inboundMessage.body ?? "",
-      last_message_at: inboundMessage.timestamp ? new Date(Number(inboundMessage.timestamp) * 1000).toISOString() : new Date().toISOString(),
-      unread_count: (existingConversation?.unread_count ?? 0) + 1,
+      displayName: displayName,
+      status: AppConversationStatus.open,
+      source: AppLeadSource.whatsapp_inbound,
+      lastMessagePreview: inboundMessage.body ?? "",
+      lastMessageAt: lastMessageAt,
+      unreadCount: (existingConversation?.unreadCount ?? 0) + 1,
     };
 
-    const { data: conversation } = await supabase
-      .from("conversations")
-      .upsert(
-        existingConversation
-          ? { id: existingConversation.id, ...conversationPayload }
-          : conversationPayload,
-        { onConflict: "id" },
-      )
-      .select("id")
-      .single();
+    const conversation = await prisma.conversation.upsert({
+      where: { id: existingConversation?.id ?? "new-id" },
+      update: conversationData,
+      create: conversationData,
+    });
 
-    if (!conversation) {
-      continue;
-    }
-
-    await supabase.from("conversation_messages").insert({
-      workspace_id: workspaceId,
-      conversation_id: conversation.id,
-      meta_message_id: inboundMessage.id,
-      direction: "inbound",
-      message_type: inboundMessage.type ?? "text",
-      body: inboundMessage.body ?? "",
-      status: "received",
-      payload: inboundMessage,
-      sent_at: inboundMessage.timestamp ? new Date(Number(inboundMessage.timestamp) * 1000).toISOString() : new Date().toISOString(),
+    await prisma.conversationMessage.create({
+      data: {
+        workspaceId: workspaceId,
+        conversationId: conversation.id,
+        metaMessageId: inboundMessage.id,
+        direction: AppMessageDirection.inbound,
+        messageType: inboundMessage.type ?? "text",
+        body: inboundMessage.body ?? "",
+        status: "received",
+        payload: inboundMessage as any,
+        sentAt: lastMessageAt,
+      },
     });
 
     try {
       if (contact?.id) {
-        await supabase.from("contact_tags").upsert({
-          workspace_id: workspaceId,
-          contact_id: contact.id,
-          tag: "Joined",
-        }, { onConflict: "contact_id,tag" });
+        await prisma.contactTag.upsert({
+          where: {
+            contactId_tag: {
+              contactId: contact.id,
+              tag: "Joined",
+            },
+          },
+          update: { workspaceId },
+          create: {
+            workspaceId,
+            contactId: contact.id,
+            tag: "Joined",
+          },
+        });
 
         // If it was a button click, log it as an automation interactive step
         if (inboundMessage.interactiveId) {
-          await logAutomationEvent(supabase, {
+          await logAutomationEvent({
             workspaceId,
-            ruleType: "auto_reply_first_inbound", // Or a specific flow rule
+            ruleType: AppAutomationRuleType.auto_reply_first_inbound,
             conversationId: conversation.id,
             status: "triggered",
             summary: `User clicked interactive button: ${inboundMessage.interactiveTitle} (${inboundMessage.interactiveId})`,
@@ -491,40 +514,44 @@ async function persistWhatsAppWebhookEvent(supabase: ReturnType<typeof getSupaba
       console.error("Failed to apply 'Joined' tag or log interactive response", tagError);
     }
 
-    const { data: existingLead } = await supabase
-      .from("leads")
-      .select("id")
-      .eq("workspace_id", workspaceId)
-      .eq("phone", inboundMessage.from)
-      .maybeSingle();
+    const existingLead = await prisma.lead.findFirst({
+      where: {
+        workspaceId: workspaceId,
+        phone: inboundMessage.from,
+      },
+      select: { id: true },
+    });
 
     if (!existingLead) {
       let assignedTo: string | null = null;
-      const assignRule = await getEnabledAutomationRule(supabase, workspaceId, "auto_assign_new_lead");
+      const assignRule = await getEnabledAutomationRule(workspaceId, AppAutomationRuleType.auto_assign_new_lead);
       if (assignRule?.config && typeof assignRule.config === "object") {
-        const configuredOwner = "ownerName" in assignRule.config && typeof assignRule.config.ownerName === "string"
-          ? assignRule.config.ownerName.trim()
+        const configuredOwner = "ownerName" in (assignRule.config as any) && typeof (assignRule.config as any).ownerName === "string"
+          ? (assignRule.config as any).ownerName.trim()
           : "";
         assignedTo = configuredOwner || null;
       }
 
-      const { data: createdLead } = await supabase.from("leads").insert({
-        workspace_id: workspaceId,
-        contact_id: contact?.id ?? null,
-        conversation_id: conversation.id,
-        full_name: displayName,
-        phone: inboundMessage.from,
-        status: "new",
-        source: "whatsapp_inbound",
-        source_label: "Inbound WhatsApp conversation",
-        assigned_to: assignedTo,
-        notes: "Lead created automatically from inbound WhatsApp webhook.",
-      }).select("id").single();
+      const createdLead = await prisma.lead.create({
+        data: {
+          workspaceId: workspaceId,
+          contactId: contact?.id ?? null,
+          conversationId: conversation.id,
+          fullName: displayName,
+          phone: inboundMessage.from,
+          status: AppLeadStatus.new,
+          source: AppLeadSource.whatsapp_inbound,
+          sourceLabel: "Inbound WhatsApp conversation",
+          assignedTo: assignedTo,
+          notes: "Lead created automatically from inbound WhatsApp webhook.",
+        },
+        select: { id: true },
+      });
 
       if (assignedTo && createdLead?.id) {
-        await logAutomationEvent(supabase, {
+        await logAutomationEvent({
           workspaceId,
-          ruleType: "auto_assign_new_lead",
+          ruleType: AppAutomationRuleType.auto_assign_new_lead,
           conversationId: conversation.id,
           leadId: createdLead.id,
           status: "triggered",
@@ -534,9 +561,9 @@ async function persistWhatsAppWebhookEvent(supabase: ReturnType<typeof getSupaba
     }
 
     if (!existingConversation?.id) {
-      const autoReplyRule = await getEnabledAutomationRule(supabase, workspaceId, "auto_reply_first_inbound");
-      const autoReplyTemplate = autoReplyRule?.config && typeof autoReplyRule.config === "object" && "message" in autoReplyRule.config && typeof autoReplyRule.config.message === "string"
-        ? autoReplyRule.config.message.trim()
+      const autoReplyRule = await getEnabledAutomationRule(workspaceId, AppAutomationRuleType.auto_reply_first_inbound);
+      const autoReplyTemplate = autoReplyRule?.config && typeof autoReplyRule.config === "object" && "message" in (autoReplyRule.config as any) && typeof (autoReplyRule.config as any).message === "string"
+        ? (autoReplyRule.config as any).message.trim()
         : "";
 
       if (autoReplyTemplate) {
@@ -545,47 +572,48 @@ async function persistWhatsAppWebhookEvent(supabase: ReturnType<typeof getSupaba
             contactName: displayName,
             contactPhone: inboundMessage.from,
           });
-          const response = await sendWorkspaceAutomationMessage(supabase, {
+          const response = await sendWorkspaceAutomationMessage({
             workspaceId,
             to: inboundMessage.from,
             body,
           });
-          const sentAt = new Date().toISOString();
+          const sentAt = new Date();
           const messageId = Array.isArray((response as { messages?: Array<{ id?: string }> }).messages)
             ? (response as { messages?: Array<{ id?: string }> }).messages?.[0]?.id ?? null
             : null;
 
           await Promise.all([
-            supabase.from("conversation_messages").insert({
-              workspace_id: workspaceId,
-              conversation_id: conversation.id,
-              meta_message_id: messageId,
-              direction: "outbound",
-              message_type: "text",
-              body,
-              status: "sent",
-              payload: response,
-              sent_at: sentAt,
+            prisma.conversationMessage.create({
+              data: {
+                workspaceId: workspaceId,
+                conversationId: conversation.id,
+                metaMessageId: messageId,
+                direction: AppMessageDirection.outbound,
+                messageType: "text",
+                body,
+                status: "sent",
+                payload: response as any,
+                sentAt: sentAt,
+              },
             }),
-            supabase
-              .from("conversations")
-              .update({
-                last_message_preview: body,
-                last_message_at: sentAt,
-              })
-              .eq("workspace_id", workspaceId)
-              .eq("id", conversation.id),
+            prisma.conversation.update({
+              where: { id: conversation.id },
+              data: {
+                lastMessagePreview: body,
+                lastMessageAt: sentAt,
+              },
+            }),
           ]);
 
-          await logAutomationEvent(supabase, {
+          await logAutomationEvent({
             workspaceId,
-            ruleType: "auto_reply_first_inbound",
+            ruleType: AppAutomationRuleType.auto_reply_first_inbound,
             conversationId: conversation.id,
             status: "triggered",
             summary: `First inbound auto-reply sent to ${displayName}.`,
           });
         } catch (error) {
-          await logFailedSend(supabase, {
+          await logFailedSend({
             workspaceId,
             channel: "automation",
             targetType: "conversation",
@@ -598,9 +626,9 @@ async function persistWhatsAppWebhookEvent(supabase: ReturnType<typeof getSupaba
               conversationId: conversation.id,
             },
           });
-          await logAutomationEvent(supabase, {
+          await logAutomationEvent({
             workspaceId,
-            ruleType: "auto_reply_first_inbound",
+            ruleType: AppAutomationRuleType.auto_reply_first_inbound,
             conversationId: conversation.id,
             status: "failed",
             summary: `First inbound auto-reply failed for ${displayName}.`,
@@ -618,17 +646,19 @@ async function persistWhatsAppWebhookEvent(supabase: ReturnType<typeof getSupaba
       continue;
     }
 
-    await supabase
-      .from("conversation_messages")
-      .update({
+    await prisma.conversationMessage.updateMany({
+      where: {
+        workspaceId,
+        metaMessageId: messageStatus.id,
+      },
+      data: {
         status: messageStatus.status ?? "sent",
-      })
-      .eq("workspace_id", workspaceId)
-      .eq("meta_message_id", messageStatus.id);
+      },
+    });
   }
 }
 
-async function persistLeadgenWebhookEvent(supabase: ReturnType<typeof getSupabaseAdmin>, event: SummarizedLeadWebhookEvent) {
+async function persistLeadgenWebhookEvent(event: SummarizedLeadWebhookEvent) {
   const fullName = event.fieldData.find((field) => field.name?.toLowerCase().includes("name"))?.values?.[0] ?? "Meta Lead";
   const phone = event.fieldData.find((field) => field.name?.toLowerCase().includes("phone"))?.values?.[0] ?? "";
   const email = event.fieldData.find((field) => field.name?.toLowerCase().includes("email"))?.values?.[0] ?? "";
@@ -637,34 +667,36 @@ async function persistLeadgenWebhookEvent(supabase: ReturnType<typeof getSupabas
     return;
   }
 
-  const { data: mappedSource } = await supabase
-    .from("meta_lead_source_mappings")
-    .select("workspace_id, label, page_id, ad_id, form_id")
-    .or([
-      event.adId ? `ad_id.eq.${event.adId}` : "",
-      event.leadgenId ? `id.eq.${event.leadgenId}` : "",
-      event.pageId ? `page_id.eq.${event.pageId}` : "",
-    ].filter(Boolean).join(","))
-    .limit(5);
+  const mappedSource = await prisma.metaLeadSourceMapping.findMany({
+    where: {
+      OR: [
+        event.adId ? { adId: event.adId } : undefined,
+        event.pageId ? { pageId: event.pageId } : undefined,
+      ].filter(Boolean) as any,
+    },
+    take: 5,
+  });
 
   const prioritizedMapping = (mappedSource ?? []).sort((left, right) => {
-    const leftScore = (left.ad_id ? 4 : 0) + (left.form_id ? 2 : 0) + (left.page_id ? 1 : 0);
-    const rightScore = (right.ad_id ? 4 : 0) + (right.form_id ? 2 : 0) + (right.page_id ? 1 : 0);
+    const leftScore = (left.adId ? 4 : 0) + (left.formId ? 2 : 0) + (left.pageId ? 1 : 0);
+    const rightScore = (right.adId ? 4 : 0) + (right.formId ? 2 : 0) + (right.pageId ? 1 : 0);
     return rightScore - leftScore;
   })[0];
 
-  const workspaceId = prioritizedMapping?.workspace_id ?? null;
-  await supabase.from("meta_webhook_events").insert({
-    workspace_id: workspaceId,
-    event_type: event.field,
-    payload: event,
+  const workspaceId = prioritizedMapping?.workspaceId ?? null;
+  await prisma.metaWebhookEvent.create({
+    data: {
+      workspaceId: workspaceId,
+      eventType: event.field,
+      payload: event as any,
+    },
   });
 
   if (!workspaceId) {
     return;
   }
 
-  await logOperationalEvent(supabase, {
+  await logOperationalEvent({
     workspaceId,
     eventType: "meta_lead_captured",
     level: "info",
@@ -676,64 +708,93 @@ async function persistLeadgenWebhookEvent(supabase: ReturnType<typeof getSupabas
     },
   });
 
-  const { data: contact } = await supabase
-    .from("contacts")
-    .upsert({
-      workspace_id: workspaceId,
+  const contact = await prisma.contact.upsert({
+    where: {
+      workspaceId_phone: {
+        workspaceId: workspaceId,
+        phone,
+      },
+    },
+    update: { name: fullName },
+    create: {
+      workspaceId: workspaceId,
       name: fullName,
       phone,
-    }, { onConflict: "workspace_id,phone" })
-    .select("id")
-    .single();
+    },
+    select: { id: true },
+  });
 
-  const { data: conversation } = await supabase
-    .from("conversations")
-    .insert({
-      workspace_id: workspaceId,
-      contact_id: contact?.id ?? null,
+  const conversation = await prisma.conversation.create({
+    data: {
+      workspaceId: workspaceId,
+      contactId: contact?.id ?? null,
       phone,
-      display_name: fullName,
-      status: "open",
-      source: "meta_ads",
-      last_message_preview: "Lead captured from Meta ad form",
-      last_message_at: event.createdTime ? new Date(event.createdTime * 1000).toISOString() : new Date().toISOString(),
-      unread_count: 0,
-    })
-    .select("id")
-    .single();
+      displayName: fullName,
+      status: AppConversationStatus.open,
+      source: AppLeadSource.meta_ads,
+      lastMessagePreview: "Lead captured from Meta ad form",
+      lastMessageAt: event.createdTime ? new Date(event.createdTime * 1000) : new Date(),
+      unreadCount: 0,
+    },
+    select: { id: true },
+  });
 
-  const assignRule = await getEnabledAutomationRule(supabase, workspaceId, "auto_assign_new_lead");
-  const configuredOwner = assignRule?.config && typeof assignRule.config === "object" && "ownerName" in assignRule.config && typeof assignRule.config.ownerName === "string"
-    ? assignRule.config.ownerName.trim()
+  const assignRule = await getEnabledAutomationRule(workspaceId, AppAutomationRuleType.auto_assign_new_lead);
+  const configuredOwner = assignRule?.config && typeof assignRule.config === "object" && "ownerName" in (assignRule.config as any) && typeof (assignRule.config as any).ownerName === "string"
+    ? (assignRule.config as any).ownerName.trim()
     : "";
 
-  const { data: leadRecord } = await supabase.from("leads").upsert({
-    workspace_id: workspaceId,
-    contact_id: contact?.id ?? null,
-    conversation_id: conversation?.id ?? null,
-    meta_lead_id: event.leadgenId,
-    full_name: fullName,
-    phone,
-    email,
-    status: "new",
-    source: "meta_ads",
-    source_label: buildLeadAttributionLabel({
-      label: prioritizedMapping?.label,
-      pageId: event.pageId,
-      adId: event.adId,
-    }),
-    assigned_to: configuredOwner || null,
-    notes: buildLeadAttributionNotes({
-      pageId: event.pageId,
-      adId: event.adId,
-    }),
-  }, { onConflict: "meta_lead_id" }).select("id").single();
+  const leadRecord = await prisma.lead.upsert({
+    where: { metaLeadId: event.leadgenId ?? "new-meta-lead-id" },
+    update: {
+      workspaceId: workspaceId,
+      contactId: contact?.id ?? null,
+      conversationId: conversation?.id ?? null,
+      fullName: fullName,
+      phone,
+      email,
+      status: AppLeadStatus.new,
+      source: AppLeadSource.meta_ads,
+      sourceLabel: buildLeadAttributionLabel({
+        label: prioritizedMapping?.label,
+        pageId: event.pageId,
+        adId: event.adId,
+      }),
+      assignedTo: configuredOwner || null,
+      notes: buildLeadAttributionNotes({
+        pageId: event.pageId,
+        adId: event.adId,
+      }),
+    },
+    create: {
+      workspaceId: workspaceId,
+      contactId: contact?.id ?? null,
+      conversationId: conversation?.id ?? null,
+      metaLeadId: event.leadgenId,
+      fullName: fullName,
+      phone,
+      email,
+      status: AppLeadStatus.new,
+      source: AppLeadSource.meta_ads,
+      sourceLabel: buildLeadAttributionLabel({
+        label: prioritizedMapping?.label,
+        pageId: event.pageId,
+        adId: event.adId,
+      }),
+      assignedTo: configuredOwner || null,
+      notes: buildLeadAttributionNotes({
+        pageId: event.pageId,
+        adId: event.adId,
+      }),
+    },
+    select: { id: true },
+  });
 
   if (leadRecord?.id) {
     if (configuredOwner) {
-      await logAutomationEvent(supabase, {
+      await logAutomationEvent({
         workspaceId,
-        ruleType: "auto_assign_new_lead",
+        ruleType: AppAutomationRuleType.auto_assign_new_lead,
         conversationId: conversation?.id ?? null,
         leadId: leadRecord.id,
         status: "triggered",
@@ -742,7 +803,8 @@ async function persistLeadgenWebhookEvent(supabase: ReturnType<typeof getSupabas
     }
 
     try {
-      await startFlowForLead(supabase, workspaceId, leadRecord.id);
+      // In Neon version, we pass the Prisma client or use internally
+      await startFlowForLead(workspaceId, leadRecord.id);
     } catch (flowError) {
       console.error("Failed to start Phase 1 flow for lead", flowError);
     }
@@ -786,16 +848,16 @@ app.get("/t/:code", async (req, res) => {
     const workspaceId = typeof req.query.wid === "string" ? req.query.wid : null;
 
     if (workspaceId) {
-      supabase.from("link_clicks").insert({
-        workspace_id: workspaceId,
-        contact_id: contactId,
-        link_code: code,
-        original_url: targetUrl,
-        ip_address: req.ip,
-        user_agent: req.get("User-Agent"),
-      }).then(({ error }) => {
-        if (error) console.error("Failed to log link click", error);
-      });
+      prisma.linkClick.create({
+        data: {
+          workspaceId: workspaceId,
+          contactId: contactId,
+          linkCode: code,
+          originalUrl: targetUrl,
+          ipAddress: req.ip,
+          userAgent: req.get("User-Agent"),
+        },
+      }).catch((err) => console.error("Failed to log link click", err));
     }
 
     res.redirect(targetUrl);
@@ -825,20 +887,18 @@ app.post("/meta/webhook", (req, res) => {
 
   void (async () => {
     try {
-      const supabase = getSupabaseAdmin();
-
       for (const event of summary) {
-        const isNewEvent = await claimWebhookEvent(supabase, event);
+        const isNewEvent = await claimWebhookEvent(event);
         if (!isNewEvent) {
           continue;
         }
 
         if (event.kind === "whatsapp") {
-          await persistWhatsAppWebhookEvent(supabase, event);
+          await persistWhatsAppWebhookEvent(event);
           continue;
         }
 
-        await persistLeadgenWebhookEvent(supabase, event);
+        await persistLeadgenWebhookEvent(event);
       }
     } catch (error) {
       console.error("Failed to persist Meta webhook event", error);
@@ -856,29 +916,53 @@ app.post("/meta/exchange-code", async (req, res, next) => {
     try {
       const workspaceContext = await getWorkspaceContextFromRequestAuthHeader(req.headers.authorization);
       if (workspaceContext) {
-        const supabase = getSupabaseAdmin();
-        await Promise.all([
-          supabase.from("meta_authorizations").upsert({
-            workspace_id: workspaceContext.workspaceId,
-            access_token: data.authorization.accessToken,
-            token_type: data.authorization.tokenType,
-            expires_at: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString(),
+        await prisma.$transaction([
+          prisma.metaAuthorization.upsert({
+            where: { workspaceId: workspaceContext.workspaceId },
+            update: {
+              accessToken: data.authorization.accessToken,
+              tokenType: data.authorization.tokenType,
+              expiresAt: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
+            },
+            create: {
+              workspaceId: workspaceContext.workspaceId,
+              accessToken: data.authorization.accessToken,
+              tokenType: data.authorization.tokenType,
+              expiresAt: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
+            },
           }),
-          supabase.from("whatsapp_connections").upsert({
-            workspace_id: workspaceContext.workspaceId,
-            meta_business_id: data.candidate.metaBusinessId,
-            meta_business_portfolio_id: data.candidate.metaBusinessPortfolioId,
-            waba_id: data.candidate.wabaId,
-            phone_number_id: data.candidate.phoneNumberId,
-            display_phone_number: data.candidate.displayPhoneNumber,
-            verified_name: data.candidate.verifiedName,
-            business_portfolio: data.candidate.businessPortfolio,
-            business_name: data.candidate.businessName,
-            status: "connected",
-            business_verification_status: data.candidate.businessVerificationStatus,
-            account_review_status: data.candidate.accountReviewStatus,
-            oba_status: data.candidate.obaStatus,
-          }, { onConflict: "workspace_id" }),
+          prisma.whatsAppConnection.upsert({
+            where: { workspaceId: workspaceContext.workspaceId },
+            update: {
+              metaBusinessId: data.candidate.metaBusinessId,
+              metaBusinessPortfolioId: data.candidate.metaBusinessPortfolioId,
+              wabaId: data.candidate.wabaId,
+              phone_number_id: data.candidate.phoneNumberId,
+              display_phone_number: data.candidate.displayPhoneNumber,
+              verified_name: data.candidate.verifiedName,
+              business_portfolio: data.candidate.businessPortfolio,
+              business_name: data.candidate.businessName,
+              status: ConnectionStatus.connected,
+              business_verification_status: data.candidate.businessVerificationStatus,
+              account_review_status: data.candidate.accountReviewStatus,
+              oba_status: data.candidate.obaStatus,
+            },
+            create: {
+              workspaceId: workspaceContext.workspaceId,
+              metaBusinessId: data.candidate.metaBusinessId,
+              metaBusinessPortfolioId: data.candidate.metaBusinessPortfolioId,
+              wabaId: data.candidate.wabaId,
+              phone_number_id: data.candidate.phoneNumberId,
+              display_phone_number: data.candidate.displayPhoneNumber,
+              verified_name: data.candidate.verifiedName,
+              business_portfolio: data.candidate.businessPortfolio,
+              business_name: data.candidate.businessName,
+              status: ConnectionStatus.connected,
+              business_verification_status: data.candidate.businessVerificationStatus,
+              account_review_status: data.candidate.accountReviewStatus,
+              oba_status: data.candidate.obaStatus,
+            },
+          }),
         ]);
       }
     } catch (persistenceError) {
@@ -898,16 +982,10 @@ app.get("/meta/source-mappings", async (req, res, next) => {
       throw new Error("Supabase authorization is required to load Meta source mappings.");
     }
 
-    const supabase = getSupabaseAdmin();
-    const { data, error } = await supabase
-      .from("meta_lead_source_mappings")
-      .select("id, label, page_id, ad_id, form_id, created_at")
-      .eq("workspace_id", workspaceContext.workspaceId)
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      throw error;
-    }
+    const data = await prisma.metaLeadSourceMapping.findMany({
+      where: { workspaceId: workspaceContext.workspaceId },
+      orderBy: { createdAt: "desc" },
+    });
 
     res.json({ data });
   } catch (error) {
@@ -927,22 +1005,15 @@ app.post("/meta/source-mappings", async (req, res, next) => {
       throw new Error("Provide at least one Meta identifier: page ID, ad ID, or form ID.");
     }
 
-    const supabase = getSupabaseAdmin();
-    const { data, error } = await supabase
-      .from("meta_lead_source_mappings")
-      .insert({
-        workspace_id: workspaceContext.workspaceId,
+    const data = await prisma.metaLeadSourceMapping.create({
+      data: {
+        workspaceId: workspaceContext.workspaceId,
         label: payload.label,
-        page_id: payload.pageId || null,
-        ad_id: payload.adId || null,
-        form_id: payload.formId || null,
-      })
-      .select("id, label, page_id, ad_id, form_id, created_at")
-      .single();
-
-    if (error) {
-      throw error;
-    }
+        pageId: payload.pageId || null,
+        adId: payload.adId || null,
+        formId: payload.formId || null,
+      },
+    });
 
     res.json({ data });
   } catch (error) {
@@ -961,10 +1032,12 @@ app.post("/meta/send-template", async (req, res, next) => {
     }
     workspaceId = workspaceContext.workspaceId;
 
-    const supabase = getSupabaseAdmin();
-    const [authorization, { data: connection }] = await Promise.all([
-      getActiveMetaAuthorization(supabase, workspaceContext.workspaceId),
-      supabase.from("whatsapp_connections").select("phone_number_id").eq("workspace_id", workspaceContext.workspaceId).maybeSingle(),
+    const [authorization, connection] = await Promise.all([
+      getActiveMetaAuthorization(workspaceContext.workspaceId),
+      prisma.whatsAppConnection.findUnique({
+        where: { workspaceId: workspaceContext.workspaceId },
+        select: { phone_number_id: true },
+      }),
     ]);
 
     if (!connection?.phone_number_id) {
@@ -972,7 +1045,7 @@ app.post("/meta/send-template", async (req, res, next) => {
     }
 
     const data = await sendMetaTemplateMessage({
-      accessToken: authorization.access_token,
+      accessToken: authorization.accessToken,
       phoneNumberId: connection.phone_number_id,
       to: payload.to,
       templateName: payload.templateName,
@@ -980,7 +1053,7 @@ app.post("/meta/send-template", async (req, res, next) => {
       bodyParameters: payload.bodyParameters,
     });
 
-    await logOperationalEvent(supabase, {
+    await logOperationalEvent({
       workspaceId: workspaceContext.workspaceId,
       eventType: "template_sent",
       level: "info",
@@ -995,7 +1068,7 @@ app.post("/meta/send-template", async (req, res, next) => {
   } catch (error) {
     if (workspaceId && payload) {
       try {
-        await logFailedSend(getSupabaseAdmin(), {
+        await logFailedSend({
           workspaceId,
           channel: "template",
           targetType: "workspace",
@@ -1023,19 +1096,30 @@ app.post("/meta/send-campaign", async (req, res, next) => {
       throw new Error("Supabase authorization is required to send WhatsApp campaigns.");
     }
 
-    const supabase = getSupabaseAdmin();
-    const [authorization, { data: connection }, { data: template }, { data: contacts }] = await Promise.all([
-      getActiveMetaAuthorization(supabase, workspaceContext.workspaceId),
-      supabase.from("whatsapp_connections").select("phone_number_id").eq("workspace_id", workspaceContext.workspaceId).maybeSingle(),
-      supabase.from("message_templates").select("id, name, language, body").eq("workspace_id", workspaceContext.workspaceId).eq("id", payload.templateId).maybeSingle(),
-      supabase.from("contacts").select("id, name, phone").eq("workspace_id", workspaceContext.workspaceId).in("id", payload.contactIds),
+    const [authorization, connection, template, contacts] = await Promise.all([
+      getActiveMetaAuthorization(workspaceContext.workspaceId),
+      prisma.whatsAppConnection.findUnique({
+        where: { workspaceId: workspaceContext.workspaceId },
+        select: { phone_number_id: true },
+      }),
+      prisma.messageTemplate.findUnique({
+        where: { id: payload.templateId },
+        select: { id: true, name: true, language: true, body: true, workspaceId: true },
+      }),
+      prisma.contact.findMany({
+        where: {
+          workspaceId: workspaceContext.workspaceId,
+          id: { in: payload.contactIds },
+        },
+        select: { id: true, name: true, phone: true },
+      }),
     ]);
 
     if (!connection?.phone_number_id) {
       throw new Error("No connected Meta phone number was found for this workspace.");
     }
 
-    if (!template) {
+    if (!template || template.workspaceId !== workspaceContext.workspaceId) {
       throw new Error("Template not found for this workspace.");
     }
 
@@ -1055,7 +1139,7 @@ app.post("/meta/send-campaign", async (req, res, next) => {
 
       try {
         const data = await sendMetaTemplateMessage({
-          accessToken: authorization.access_token,
+          accessToken: authorization.accessToken,
           phoneNumberId: connection.phone_number_id,
           to: contact.phone,
           templateName: template.name,
@@ -1075,7 +1159,7 @@ app.post("/meta/send-campaign", async (req, res, next) => {
           phone: contact.phone,
           errorMessage,
         });
-        await logFailedSend(supabase, {
+        await logFailedSend({
           workspaceId: workspaceContext.workspaceId,
           channel: "campaign",
           targetType: "contact",
@@ -1094,7 +1178,7 @@ app.post("/meta/send-campaign", async (req, res, next) => {
       }
     }
 
-    await logOperationalEvent(supabase, {
+    await logOperationalEvent({
       workspaceId: workspaceContext.workspaceId,
       eventType: "campaign_send_completed",
       level: failures.length > 0 ? "warning" : "info",
@@ -1142,28 +1226,30 @@ app.post("/meta/send-reply", async (req, res, next) => {
     }
     workspaceId = workspaceContext.workspaceId;
 
-    const supabase = getSupabaseAdmin();
-    const [authorization, { data: connection }, { data: conversation }] = await Promise.all([
-      getActiveMetaAuthorization(supabase, workspaceContext.workspaceId),
-      supabase.from("whatsapp_connections").select("phone_number_id").eq("workspace_id", workspaceContext.workspaceId).maybeSingle(),
-      supabase
-        .from("conversations")
-        .select("id, workspace_id")
-        .eq("workspace_id", workspaceContext.workspaceId)
-        .eq("id", payload.conversationId)
-        .maybeSingle(),
+    const [authorization, connection, conversation] = await Promise.all([
+      getActiveMetaAuthorization(workspaceContext.workspaceId),
+      prisma.whatsAppConnection.findUnique({
+        where: { workspaceId: workspaceContext.workspaceId },
+        select: { phone_number_id: true },
+      }),
+      prisma.conversation.findUnique({
+        where: {
+          id: payload.conversationId,
+        },
+        select: { id: true, workspaceId: true },
+      }),
     ]);
 
     if (!connection?.phone_number_id) {
       throw new Error("No connected Meta phone number was found for this workspace.");
     }
 
-    if (!conversation) {
+    if (!conversation || conversation.workspaceId !== workspaceContext.workspaceId) {
       throw new Error("Conversation not found for this workspace.");
     }
 
     const data = await sendMetaTextMessage({
-      accessToken: authorization.access_token,
+      accessToken: authorization.accessToken,
       phoneNumberId: connection.phone_number_id,
       to: payload.to,
       body: payload.body,
@@ -1172,32 +1258,33 @@ app.post("/meta/send-reply", async (req, res, next) => {
     const messageId = Array.isArray((data as { messages?: Array<{ id?: string }> }).messages)
       ? (data as { messages?: Array<{ id?: string }> }).messages?.[0]?.id ?? null
       : null;
-    const sentAt = new Date().toISOString();
+    const sentAt = new Date();
 
-    await Promise.all([
-      supabase
-        .from("conversations")
-        .update({
-          last_message_preview: payload.body,
-          last_message_at: sentAt,
-          status: "open",
-        })
-        .eq("workspace_id", workspaceContext.workspaceId)
-        .eq("id", payload.conversationId),
-      supabase.from("conversation_messages").insert({
-        workspace_id: workspaceContext.workspaceId,
-        conversation_id: payload.conversationId,
-        meta_message_id: messageId,
-        direction: "outbound",
-        message_type: "text",
-        body: payload.body,
-        status: "sent",
-        payload: data,
-        sent_at: sentAt,
+    await prisma.$transaction([
+      prisma.conversation.update({
+        where: { id: payload.conversationId },
+        data: {
+          lastMessagePreview: payload.body,
+          lastMessageAt: sentAt,
+          status: AppConversationStatus.open,
+        },
+      }),
+      prisma.conversationMessage.create({
+        data: {
+          workspaceId: workspaceContext.workspaceId,
+          conversationId: payload.conversationId,
+          metaMessageId: messageId,
+          direction: AppMessageDirection.outbound,
+          messageType: "text",
+          body: payload.body,
+          status: "sent",
+          payload: data as any,
+          sentAt: sentAt,
+        },
       }),
     ]);
 
-    await logOperationalEvent(supabase, {
+    await logOperationalEvent({
       workspaceId: workspaceContext.workspaceId,
       eventType: "reply_sent",
       level: "info",
@@ -1218,7 +1305,7 @@ app.post("/meta/send-reply", async (req, res, next) => {
   } catch (error) {
     if (workspaceId && payload) {
       try {
-        await logFailedSend(getSupabaseAdmin(), {
+        await logFailedSend({
           workspaceId,
           channel: "reply",
           targetType: "conversation",
@@ -1245,59 +1332,62 @@ app.post("/automation/process-reminders", async (req, res, next) => {
       throw new Error("Supabase authorization is required to process automation reminders.");
     }
 
-    const supabase = getSupabaseAdmin();
-    const reminderRule = await getEnabledAutomationRule(supabase, workspaceContext.workspaceId, "no_reply_reminder");
+    const reminderRule = await getEnabledAutomationRule(workspaceContext.workspaceId, AppAutomationRuleType.no_reply_reminder);
     if (!reminderRule) {
       res.json({ result: { ok: true, message: "No reminder automation is enabled for this workspace." } });
       return;
     }
 
-    const reminderHours = reminderRule.config && typeof reminderRule.config === "object" && "reminderHours" in reminderRule.config
-      ? Number(reminderRule.config.reminderHours)
+    const reminderHours = reminderRule.config && typeof reminderRule.config === "object" && "reminderHours" in (reminderRule.config as any)
+      ? Number((reminderRule.config as any).reminderHours)
       : 4;
-    const configuredOwner = reminderRule.config && typeof reminderRule.config === "object" && "ownerName" in reminderRule.config && typeof reminderRule.config.ownerName === "string"
-      ? reminderRule.config.ownerName.trim()
+    const configuredOwner = reminderRule.config && typeof reminderRule.config === "object" && "ownerName" in (reminderRule.config as any) && typeof (reminderRule.config as any).ownerName === "string"
+      ? (reminderRule.config as any).ownerName.trim()
       : "";
 
-    const [{ data: conversations }, { data: messages }, { data: priorEvents }] = await Promise.all([
-      supabase
-        .from("conversations")
-        .select("id, display_name, status, assigned_to")
-        .eq("workspace_id", workspaceContext.workspaceId)
-        .in("status", ["open", "pending"]),
-      supabase
-        .from("conversation_messages")
-        .select("conversation_id, direction, sent_at")
-        .eq("workspace_id", workspaceContext.workspaceId),
-      supabase
-        .from("automation_events")
-        .select("conversation_id, created_at")
-        .eq("workspace_id", workspaceContext.workspaceId)
-        .eq("rule_type", "no_reply_reminder"),
+    const [conversations, messages, priorEvents] = await Promise.all([
+      prisma.conversation.findMany({
+        where: {
+          workspaceId: workspaceContext.workspaceId,
+          status: { in: [AppConversationStatus.open, AppConversationStatus.pending] },
+        },
+        select: { id: true, displayName: true, status: true, assignedTo: true },
+      }),
+      prisma.conversationMessage.findMany({
+        where: { workspaceId: workspaceContext.workspaceId },
+        select: { conversationId: true, direction: true, sentAt: true },
+      }),
+      prisma.automationEvent.findMany({
+        where: {
+          workspaceId: workspaceContext.workspaceId,
+          ruleType: AppAutomationRuleType.no_reply_reminder,
+        },
+        select: { conversationId: true, createdAt: true },
+      }),
     ]);
 
     const now = Date.now();
     let triggeredCount = 0;
 
     for (const conversation of conversations ?? []) {
-      const threadMessages = (messages ?? []).filter((message) => message.conversation_id === conversation.id);
+      const threadMessages = (messages ?? []).filter((message) => message.conversationId === conversation.id);
       const latestInbound = threadMessages
-        .filter((message) => message.direction === "inbound")
-        .sort((left, right) => new Date(right.sent_at).getTime() - new Date(left.sent_at).getTime())[0];
+        .filter((message) => message.direction === AppMessageDirection.inbound)
+        .sort((left, right) => new Date(right.sentAt).getTime() - new Date(left.sentAt).getTime())[0];
       const latestOutbound = threadMessages
-        .filter((message) => message.direction === "outbound")
-        .sort((left, right) => new Date(right.sent_at).getTime() - new Date(left.sent_at).getTime())[0];
+        .filter((message) => message.direction === AppMessageDirection.outbound)
+        .sort((left, right) => new Date(right.sentAt).getTime() - new Date(left.sentAt).getTime())[0];
 
       if (!latestInbound) {
         continue;
       }
 
-      const latestInboundAt = new Date(latestInbound.sent_at).getTime();
-      const latestOutboundAt = latestOutbound ? new Date(latestOutbound.sent_at).getTime() : 0;
+      const latestInboundAt = new Date(latestInbound.sentAt).getTime();
+      const latestOutboundAt = latestOutbound ? new Date(latestOutbound.sentAt).getTime() : 0;
       const mostRecentReminder = (priorEvents ?? [])
-        .filter((event) => event.conversation_id === conversation.id)
-        .sort((left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime())[0];
-      const mostRecentReminderAt = mostRecentReminder ? new Date(mostRecentReminder.created_at).getTime() : 0;
+        .filter((event) => event.conversationId === conversation.id)
+        .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0];
+      const mostRecentReminderAt = mostRecentReminder ? new Date(mostRecentReminder.createdAt).getTime() : 0;
 
       if (latestOutboundAt >= latestInboundAt) {
         continue;
@@ -1312,21 +1402,20 @@ app.post("/automation/process-reminders", async (req, res, next) => {
         continue;
       }
 
-      await supabase
-        .from("conversations")
-        .update({
-          status: "pending",
-          assigned_to: configuredOwner || conversation.assigned_to,
-        })
-        .eq("workspace_id", workspaceContext.workspaceId)
-        .eq("id", conversation.id);
+      await prisma.conversation.update({
+        where: { id: conversation.id },
+        data: {
+          status: AppConversationStatus.pending,
+          assignedTo: configuredOwner || conversation.assignedTo,
+        },
+      });
 
-      await logAutomationEvent(supabase, {
+      await logAutomationEvent({
         workspaceId: workspaceContext.workspaceId,
-        ruleType: "no_reply_reminder",
+        ruleType: AppAutomationRuleType.no_reply_reminder,
         conversationId: conversation.id,
         status: "triggered",
-        summary: `No-reply reminder flagged ${conversation.display_name} for follow-up after ${reminderHours} hours.`,
+        summary: `No-reply reminder flagged ${conversation.displayName} for follow-up after ${reminderHours} hours.`,
       });
       triggeredCount += 1;
     }
@@ -1351,15 +1440,12 @@ app.get("/automation/definitions", async (req, res) => {
     const context = await getWorkspaceContextFromRequestAuthHeader(req.headers.authorization);
     if (!context) return res.status(401).json({ error: "Unauthorized" });
     const { workspaceId } = context;
-    const supabase = getSupabaseAdmin();
 
-    const { data, error } = await supabase
-      .from("automation_flow_definitions")
-      .select("*")
-      .eq("workspace_id", workspaceId)
-      .order("updated_at", { ascending: false });
+    const data = await prisma.automationFlowDefinition.findMany({
+      where: { workspaceId: workspaceId },
+      orderBy: { updatedAt: "desc" },
+    });
 
-    if (error) throw error;
     res.json(data);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -1371,30 +1457,27 @@ app.post("/automation/definitions", async (req, res) => {
     const context = await getWorkspaceContextFromRequestAuthHeader(req.headers.authorization);
     if (!context) return res.status(401).json({ error: "Unauthorized" });
     const { workspaceId } = context;
-    const supabase = getSupabaseAdmin();
     const { id, name, description, nodes, edges, is_active } = req.body;
 
-    const payload: any = {
-      workspace_id: workspaceId,
-      name,
-      description,
-      nodes,
-      edges,
-      is_active: is_active ?? true,
-      updated_at: new Date().toISOString(),
-    };
+    const data = await prisma.automationFlowDefinition.upsert({
+      where: { id: id || "new-definition-id" },
+      update: {
+        name,
+        description,
+        nodes: nodes || [],
+        edges: edges || [],
+        isActive: is_active ?? true,
+      },
+      create: {
+        workspaceId: workspaceId,
+        name,
+        description,
+        nodes: nodes || [],
+        edges: edges || [],
+        isActive: is_active ?? true,
+      },
+    });
 
-    if (id) {
-      payload.id = id;
-    }
-
-    const { data, error } = await supabase
-      .from("automation_flow_definitions")
-      .upsert(payload)
-      .select()
-      .single();
-
-    if (error) throw error;
     res.json(data);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -1411,21 +1494,15 @@ app.post("/automation/process-flows", async (req, res, next) => {
     if (!workspaceContext && !isCronAuthorized) {
       throw new Error("Authorization or CRON_SECRET is required to process automation flows.");
     }
-
-    const supabase = getSupabaseAdmin();
     
     // If it's a cron trigger without a specific workspace context, we process ALL active flows across all workspaces
-    const query = supabase
-      .from("automation_flow_runs")
-      .select("*")
-      .eq("status", "active")
-      .lte("scheduled_at", new Date().toISOString());
-
-    if (workspaceContext) {
-      query.eq("workspace_id", workspaceContext.workspaceId);
-    }
-
-    const { data: dueFlows } = await query;
+    const dueFlows = await prisma.automationFlowRun.findMany({
+      where: {
+        status: "active",
+        scheduledAt: { lte: new Date() },
+        workspaceId: workspaceContext ? workspaceContext.workspaceId : undefined,
+      },
+    });
 
     if (!dueFlows || dueFlows.length === 0) {
       res.json({ result: { ok: true, message: "No due automation flows to process." } });
@@ -1433,7 +1510,7 @@ app.post("/automation/process-flows", async (req, res, next) => {
     }
 
     for (const flowRun of dueFlows) {
-      await processFlowRun(supabase, flowRun);
+      await processFlowRun(flowRun as any);
     }
 
     res.json({ result: { ok: true, message: `Processed ${dueFlows.length} automation flow(s).` } });
@@ -1450,26 +1527,25 @@ app.post("/automation/lead-contacted", async (req, res, next) => {
       throw new Error("Supabase authorization is required to process contacted-lead automation.");
     }
 
-    const supabase = getSupabaseAdmin();
-    const followUpRule = await getEnabledAutomationRule(supabase, workspaceContext.workspaceId, "follow_up_after_contacted");
+    const followUpRule = await getEnabledAutomationRule(workspaceContext.workspaceId, AppAutomationRuleType.follow_up_after_contacted);
     if (!followUpRule) {
       res.json({ result: { ok: true, message: "No contacted-lead follow-up automation is enabled." } });
       return;
     }
 
-    const { data: lead } = await supabase
-      .from("leads")
-      .select("id, full_name, phone, conversation_id, source")
-      .eq("workspace_id", workspaceContext.workspaceId)
-      .eq("id", payload.leadId)
-      .maybeSingle();
+    const lead = await prisma.lead.findUnique({
+      where: {
+        id: payload.leadId,
+      },
+      select: { id: true, fullName: true, phone: true, conversationId: true, source: true },
+    });
 
-    if (!lead?.phone) {
+    if (!lead || lead.phone === null) {
       throw new Error("Lead not found or missing phone number.");
     }
 
-    const followUpTemplate = followUpRule.config && typeof followUpRule.config === "object" && "message" in followUpRule.config && typeof followUpRule.config.message === "string"
-      ? followUpRule.config.message.trim()
+    const followUpTemplate = followUpRule.config && typeof followUpRule.config === "object" && "message" in (followUpRule.config as any) && typeof (followUpRule.config as any).message === "string"
+      ? (followUpRule.config as any).message.trim()
       : "";
 
     if (!followUpTemplate) {
@@ -1477,60 +1553,41 @@ app.post("/automation/lead-contacted", async (req, res, next) => {
       return;
     }
 
-    let conversationId = lead.conversation_id;
+    let conversationId = lead.conversationId;
     if (!conversationId) {
-      const { data: conversation } = await supabase
-        .from("conversations")
-        .insert({
-          workspace_id: workspaceContext.workspaceId,
-          contact_id: null,
+      const conversation = await prisma.conversation.create({
+        data: {
+          workspaceId: workspaceContext.workspaceId,
+          contactId: null,
           phone: lead.phone,
-          display_name: lead.full_name,
-          status: "open",
-          source: lead.source,
-          last_message_preview: "",
-          last_message_at: new Date().toISOString(),
-          unread_count: 0,
-        })
-        .select("id")
-        .single();
+          displayName: lead.fullName,
+          status: AppConversationStatus.open,
+          source: lead.source as AppLeadSource,
+          lastMessagePreview: "",
+          lastMessageAt: new Date(),
+          unreadCount: 0,
+        },
+        select: { id: true },
+      });
       conversationId = conversation?.id ?? null;
     }
 
     const body = resolveAutomationMessage(followUpTemplate, {
-      contactName: lead.full_name,
+      contactName: lead.fullName,
       contactPhone: lead.phone,
     });
 
     try {
-      const response = await sendWorkspaceAutomationMessage(supabase, {
+      const response = await sendWorkspaceAutomationMessage({
         workspaceId: workspaceContext.workspaceId,
         to: lead.phone,
         body,
       });
-      const sentAt = new Date().toISOString();
+      const sentAt = new Date();
       const messageId = Array.isArray((response as { messages?: Array<{ id?: string }> }).messages)
         ? (response as { messages?: Array<{ id?: string }> }).messages?.[0]?.id ?? null
         : null;
 
-      if (conversationId) {
-        await Promise.all([
-          supabase.from("conversation_messages").insert({
-            workspace_id: workspaceContext.workspaceId,
-            conversation_id: conversationId,
-            meta_message_id: messageId,
-            direction: "outbound",
-            message_type: "text",
-            body,
-            status: "sent",
-            payload: response,
-            sent_at: sentAt,
-          }),
-          supabase
-            .from("conversations")
-            .update({
-              last_message_preview: body,
-              last_message_at: sentAt,
               status: "open",
             })
             .eq("workspace_id", workspaceContext.workspaceId)
@@ -1858,19 +1915,13 @@ app.post("/whatsapp/connect", async (req, res, next) => {
       });
     }
 
-    // Sync with Supabase
-    try {
-      const supabase = getSupabaseAdmin();
-      await supabase.from("whatsapp_connections").upsert({
-        workspace_id: user.workspaceId,
-        business_portfolio: payload.businessPortfolio,
-        business_name: payload.businessName,
-        display_phone_number: payload.phoneNumber,
-        status: "connected",
-      }, { onConflict: "workspace_id" });
-    } catch (supabaseError) {
-      console.error("Failed to sync WhatsApp connection to Supabase", supabaseError);
-    }
+    // Supabase sync removed as we have migrated to Neon/Prisma.
+    await logOperationalEvent({
+      workspaceId: user.workspaceId,
+      eventType: "whatsapp_connected",
+      level: "info",
+      summary: `WhatsApp number ${payload.phoneNumber} connected.`,
+    });
 
     const freshUser = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
     const data = await buildAppState(prisma, freshUser);
@@ -1888,13 +1939,13 @@ app.post("/whatsapp/disconnect", async (_req, res, next) => {
       data: { status: ConnectionStatus.disconnected },
     });
 
-    // Sync with Supabase
-    try {
-      const supabase = getSupabaseAdmin();
-      await supabase.from("whatsapp_connections").update({ status: "disconnected" }).eq("workspace_id", user.workspaceId);
-    } catch (supabaseError) {
-      console.error("Failed to sync WhatsApp disconnect to Supabase", supabaseError);
-    }
+    // Supabase sync removed as we have migrated to Neon/Prisma.
+    await logOperationalEvent({
+      workspaceId: user.workspaceId,
+      eventType: "whatsapp_disconnected",
+      level: "warning",
+      summary: `WhatsApp connection disconnected.`,
+    });
 
     const freshUser = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
     const data = await buildAppState(prisma, freshUser);

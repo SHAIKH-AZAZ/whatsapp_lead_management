@@ -3,7 +3,7 @@
 
 create table if not exists public.automation_flow_runs (
   id uuid primary key default gen_random_uuid(),
-  workspace_id uuid not null references public.workspaces(id) on delete cascade,
+  workspace_id text not null references public."Workspace"(id) on delete cascade,
   lead_id uuid not null references public.leads(id) on delete cascade,
   status text not null default 'active' check (status in ('active', 'completed', 'failed', 'paused')),
   current_step integer not null default 0,

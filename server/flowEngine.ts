@@ -1,3 +1,6 @@
+import { prisma } from "./prisma";
+import { sendMetaTemplateMessage, sendMetaInteractiveMessage } from "../src/lib/api/metaApi";
+
 export type FlowStepType = "wait" | "tag" | "send_message" | "send_interactive" | "condition";
 
 export interface FlowStep {
@@ -7,13 +10,14 @@ export interface FlowStep {
 
 export interface FlowRun {
   id: string;
-  workspace_id: string;
-  lead_id: string;
-  flow_definition_id: string;
-  current_node_id: string;
-  status: "active" | "completed" | "failed";
-  retry_count: number;
-  scheduled_at: string;
+  workspaceId: string;
+  leadId: string;
+  conversationId?: string | null;
+  flowDefinitionId?: string | null;
+  currentNodeId?: string | null;
+  status: "active" | "completed" | "failed" | "paused";
+  retryCount: number;
+  scheduledAt: Date | string;
 }
 
 export interface FlowNode {
@@ -30,46 +34,23 @@ export interface FlowEdge {
 
 export interface FlowDefinition {
   id: string;
-  workspace_id: string;
+  workspaceId: string;
   nodes: FlowNode[];
   edges: FlowEdge[];
 }
 
-export const PHASE_1_FLOW: FlowStep[] = [
-  {
-    type: "tag",
-    config: { tag: "Meta Lead" },
-  },
-  {
-    type: "wait",
-    config: { hours: 2 },
-  },
-  {
-    type: "send_interactive",
-    config: {
-      body: "Ready to grow your business? Click below to join our exclusive WhatsApp group!",
-      buttons: [
-        { type: "reply", reply: { id: "join_group", title: "Join Group" } },
-        { type: "reply", reply: { id: "not_now", title: "Not Now" } },
-      ],
-    },
-  },
-];
-
 export async function startFlowForLead(
-  supabase: ReturnType<typeof getSupabaseAdmin>,
   workspaceId: string,
   leadId: string,
 ) {
   // Find the active "Meta Lead" flow definition
-  const { data: definition } = await supabase
-    .from("automation_flow_definitions")
-    .select("id, nodes")
-    .eq("workspace_id", workspaceId)
-    .eq("is_active", true)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  const definition = await prisma.automationFlowDefinition.findFirst({
+    where: {
+      workspaceId: workspaceId,
+      isActive: true,
+    },
+    orderBy: { createdAt: "desc" },
+  });
 
   if (!definition) {
     console.error("No active flow definition found for Meta Lead trigger.");
@@ -77,56 +58,57 @@ export async function startFlowForLead(
   }
 
   // Find the trigger node
-  const triggerNode = (definition.nodes as any[]).find((n: any) => n.type === "trigger" || n.type === "lead_trigger");
+  const nodes = definition.nodes as any[];
+  const triggerNode = nodes.find((n: any) => n.type === "trigger" || n.type === "lead_trigger");
   const firstNodeId = triggerNode?.id;
 
-  const { data: flowRun, error } = await supabase
-    .from("automation_flow_runs")
-    .insert({
-      workspace_id: workspaceId,
-      lead_id: leadId,
-      flow_definition_id: definition.id,
-      current_node_id: firstNodeId,
+  const flowRun = await prisma.automationFlowRun.create({
+    data: {
+      workspaceId: workspaceId,
+      leadId: leadId,
+      flowDefinitionId: definition.id,
+      currentNodeId: firstNodeId,
       status: "active",
-      scheduled_at: new Date().toISOString(),
-    })
-    .select("id")
-    .single();
-
-  if (error) {
-    console.error("Failed to start flow for lead", error);
-    return;
-  }
+      scheduledAt: new Date(),
+    },
+    select: { id: true },
+  });
 
   return flowRun;
 }
 
 export async function processFlowRun(
-  supabase: ReturnType<typeof getSupabaseAdmin>,
   flowRun: FlowRun,
 ) {
-  if (!flowRun.flow_definition_id || !flowRun.current_node_id) {
-    await supabase.from("automation_flow_runs").update({ status: "failed" }).eq("id", flowRun.id);
+  if (!flowRun.flowDefinitionId || !flowRun.currentNodeId) {
+    await prisma.automationFlowRun.update({
+      where: { id: flowRun.id },
+      data: { status: "failed" },
+    });
     return;
   }
 
-  const { data: definition } = await supabase
-    .from("automation_flow_definitions")
-    .select("*")
-    .eq("id", flowRun.flow_definition_id)
-    .single();
+  const definition = await prisma.automationFlowDefinition.findUnique({
+    where: { id: flowRun.flowDefinitionId },
+  });
 
   if (!definition) {
-    await supabase.from("automation_flow_runs").update({ status: "failed" }).eq("id", flowRun.id);
+    await prisma.automationFlowRun.update({
+      where: { id: flowRun.id },
+      data: { status: "failed" },
+    });
     return;
   }
 
-  const nodes = definition.nodes as FlowNode[];
-  const edges = definition.edges as FlowEdge[];
-  const node = nodes.find((n) => n.id === flowRun.current_node_id);
+  const nodes = definition.nodes as unknown as FlowNode[];
+  const edges = definition.edges as unknown as FlowEdge[];
+  const node = nodes.find((n) => n.id === flowRun.currentNodeId);
 
   if (!node) {
-    await supabase.from("automation_flow_runs").update({ status: "completed" }).eq("id", flowRun.id);
+    await prisma.automationFlowRun.update({
+      where: { id: flowRun.id },
+      data: { status: "completed" },
+    });
     return;
   }
 
@@ -141,7 +123,7 @@ export async function processFlowRun(
         break;
 
       case "tag":
-        await handleTagStep(supabase, flowRun, node.data);
+        await handleTagStep(flowRun, node.data);
         nextNodeId = findNextNodeId(node.id, edges);
         break;
 
@@ -151,46 +133,52 @@ export async function processFlowRun(
         break;
 
       case "send_message":
-        await handleFlowMessageSend(supabase, flowRun, node.data);
+        await handleFlowMessageSend(flowRun, node.data);
         nextNodeId = findNextNodeId(node.id, edges);
         break;
 
       case "send_interactive":
-        await handleFlowInteractiveSend(supabase, flowRun, node.data);
+        await handleFlowInteractiveSend(flowRun, node.data);
         nextNodeId = findNextNodeId(node.id, edges);
         break;
 
       case "condition": {
-        const result = await evaluateCondition(supabase, flowRun, node.data);
+        const result = await evaluateCondition(flowRun, node.data);
         nextNodeId = findNextNodeId(node.id, edges, result ? "true" : "false");
         break;
       }
     }
 
     if (nextNodeId) {
-      await supabase
-        .from("automation_flow_runs")
-        .update({
-          current_node_id: nextNodeId,
-          scheduled_at: new Date(Date.now() + delayHours * 60 * 60 * 1000).toISOString(),
-          retry_count: 0,
-        })
-        .eq("id", flowRun.id);
+      await prisma.automationFlowRun.update({
+        where: { id: flowRun.id },
+        data: {
+          currentNodeId: nextNodeId,
+          scheduledAt: new Date(Date.now() + delayHours * 60 * 60 * 1000),
+          retryCount: 0,
+        },
+      });
     } else {
-      await supabase.from("automation_flow_runs").update({ status: "completed" }).eq("id", flowRun.id);
+      await prisma.automationFlowRun.update({
+        where: { id: flowRun.id },
+        data: { status: "completed" },
+      });
     }
   } catch (error) {
-    console.error(`Flow node ${flowRun.current_node_id} failed`, error);
-    if ((flowRun.retry_count ?? 0) < 3) {
-      await supabase
-        .from("automation_flow_runs")
-        .update({
-          retry_count: (flowRun.retry_count ?? 0) + 1,
-          scheduled_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-        })
-        .eq("id", flowRun.id);
+    console.error(`Flow node ${flowRun.currentNodeId} failed`, error);
+    if ((flowRun.retryCount ?? 0) < 3) {
+      await prisma.automationFlowRun.update({
+        where: { id: flowRun.id },
+        data: {
+          retryCount: (flowRun.retryCount ?? 0) + 1,
+          scheduledAt: new Date(Date.now() + 15 * 60 * 1000),
+        },
+      });
     } else {
-      await supabase.from("automation_flow_runs").update({ status: "failed" }).eq("id", flowRun.id);
+      await prisma.automationFlowRun.update({
+        where: { id: flowRun.id },
+        data: { status: "failed" },
+      });
     }
   }
 }
@@ -200,85 +188,101 @@ function findNextNodeId(nodeId: string, edges: FlowEdge[], sourceHandle?: string
   return edge ? edge.target : null;
 }
 
-async function handleTagStep(supabase: any, flowRun: FlowRun, data: any) {
-  const { data: lead } = await supabase.from("leads").select("contact_id").eq("id", flowRun.lead_id).single();
-  if (lead?.contact_id) {
-    await supabase.from("contact_tags").upsert({
-      workspace_id: flowRun.workspace_id,
-      contact_id: lead.contact_id,
-      tag: data.tag,
-    }, { onConflict: "contact_id,tag" });
+async function handleTagStep(flowRun: FlowRun, data: any) {
+  const lead = await prisma.lead.findUnique({
+    where: { id: flowRun.leadId },
+    select: { contactId: true },
+  });
+
+  if (lead?.contactId) {
+    await prisma.contactTag.upsert({
+      where: {
+        contactId_tag: {
+          contactId: lead.contactId,
+          tag: data.tag,
+        },
+      },
+      update: { workspaceId: flowRun.workspaceId },
+      create: {
+        workspaceId: flowRun.workspaceId,
+        contactId: lead.contactId,
+        tag: data.tag,
+      },
+    });
   }
 }
 
-async function evaluateCondition(supabase: any, flowRun: FlowRun, data: any): Promise<boolean> {
+async function evaluateCondition(flowRun: FlowRun, data: any): Promise<boolean> {
   if (data.type === "has_tag") {
-    const { data: tag } = await supabase
-      .from("contact_tags")
-      .select("tag")
-      .eq("contact_id", flowRun.lead_id)
-      .eq("tag", data.tag)
-      .maybeSingle();
-    return !!tag;
+    const lead = await prisma.lead.findUnique({
+      where: { id: flowRun.leadId },
+      select: { contactId: true },
+    });
+
+    if (lead?.contactId) {
+      const tag = await prisma.contactTag.findUnique({
+        where: {
+          contactId_tag: {
+            contactId: lead.contactId,
+            tag: data.tag,
+          },
+        },
+      });
+      return !!tag;
+    }
   }
   return false;
 }
 
-async function handleFlowMessageSend(supabase: any, flowRun: FlowRun, config: any) {
-  const { data: connection } = await supabase
-    .from("whatsapp_connections")
-    .select("phone_number_id")
-    .eq("workspace_id", flowRun.workspace_id)
-    .single();
-
-  const { data: auth } = await supabase
-    .from("meta_authorizations")
-    .select("access_token")
-    .eq("workspace_id", flowRun.workspace_id)
-    .single();
-
-  const { data: lead } = await supabase
-    .from("leads")
-    .select("phone, full_name")
-    .eq("id", flowRun.lead_id)
-    .single();
+async function handleFlowMessageSend(flowRun: FlowRun, config: any) {
+  const [connection, auth, lead] = await Promise.all([
+    prisma.whatsAppConnection.findUnique({
+      where: { workspaceId: flowRun.workspaceId },
+      select: { phone_number_id: true },
+    }),
+    prisma.metaAuthorization.findUnique({
+      where: { workspaceId: flowRun.workspaceId },
+      select: { accessToken: true },
+    }),
+    prisma.lead.findUnique({
+      where: { id: flowRun.leadId },
+      select: { phone: true, fullName: true },
+    }),
+  ]);
 
   if (!connection || !auth || !lead) throw new Error("Missing flow prerequisites.");
 
   await sendMetaTemplateMessage({
-    accessToken: auth.access_token,
-    phoneNumberId: connection.phone_number_id,
+    accessToken: auth.accessToken,
+    phoneNumberId: connection.phone_number_id!,
     to: lead.phone,
     templateName: config.templateName,
     languageCode: config.languageCode || "en",
-    bodyParameters: [lead.full_name],
+    bodyParameters: [lead.fullName],
   });
 }
 
-async function handleFlowInteractiveSend(supabase: any, flowRun: FlowRun, config: any) {
-  const { data: connection } = await supabase
-    .from("whatsapp_connections")
-    .select("phone_number_id")
-    .eq("workspace_id", flowRun.workspace_id)
-    .single();
-
-  const { data: auth } = await supabase
-    .from("meta_authorizations")
-    .select("access_token")
-    .eq("workspace_id", flowRun.workspace_id)
-    .single();
-
-  const { data: lead } = await supabase
-    .from("leads")
-    .select("phone")
-    .eq("id", flowRun.lead_id)
-    .single();
+async function handleFlowInteractiveSend(flowRun: FlowRun, config: any) {
+  const [connection, auth, lead] = await Promise.all([
+    prisma.whatsAppConnection.findUnique({
+      where: { workspaceId: flowRun.workspaceId },
+      select: { phone_number_id: true },
+    }),
+    prisma.metaAuthorization.findUnique({
+      where: { workspaceId: flowRun.workspaceId },
+      select: { accessToken: true },
+    }),
+    prisma.lead.findUnique({
+      where: { id: flowRun.leadId },
+      select: { phone: true },
+    }),
+  ]);
 
   if (!connection || !auth || !lead) throw new Error("Missing flow prerequisites.");
 
   await sendMetaInteractiveMessage({
-    accessToken: auth.access_token,
-    phoneNumberId: connection.phone_number_id,
+    accessToken: auth.accessToken,
+    phoneNumberId: connection.phone_number_id!,
     to: lead.phone,
     type: "button",
     body: config.body,

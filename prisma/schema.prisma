@@ -88,6 +88,40 @@ enum PartnerPayoutStatus {
   failed
 }
 
+enum AppAutomationRuleType {
+  auto_reply_first_inbound
+  auto_assign_new_lead
+  no_reply_reminder
+  follow_up_after_contacted
+}
+
+enum AppConversationStatus {
+  open
+  pending
+  resolved
+}
+
+enum AppMessageDirection {
+  inbound
+  outbound
+}
+
+enum AppLeadStatus {
+  new
+  contacted
+  qualified
+  won
+  lost
+}
+
+enum AppLeadSource {
+  meta_ads
+  whatsapp_inbound
+  campaign
+  manual
+  organic
+}
+
 model Workspace {
   id                  String               @id @default(cuid())
   name                String
@@ -106,6 +140,19 @@ model Workspace {
   partners            Partner[]
   partnerReferrals   PartnerReferral[]
   partnerPayouts     PartnerPayout[]
+  conversations       Conversation[]
+  leads               Lead[]
+  automationRules     AutomationRule[]
+  automationEvents    AutomationEvent[]
+  operationalLogs     OperationalLog[]
+  failedSendLogs      FailedSendLog[]
+  metaAuthorizations  MetaAuthorization?
+  metaLeadMappings   MetaLeadSourceMapping[]
+  webhookEvents       MetaWebhookEvent[]
+  processedWebhooks   ProcessedWebhookEvent[]
+  flowDefinitions     AutomationFlowDefinition[]
+  flowRuns            AutomationFlowRun[]
+  linkClicks          LinkClick[]
 }
 
 model User {
@@ -131,13 +178,18 @@ model AppSession {
 model WhatsAppConnection {
   id                     String           @id @default(cuid())
   workspaceId            String
+  metaBusinessId         String?
   metaBusinessPortfolioId String?
   wabaId                 String?
-  phoneNumberId          String?
-  phoneNumber            String
-  businessName           String
-  businessPortfolio      String
+  phone_number_id        String?          @unique
+  display_phone_number    String
+  verified_name          String?
+  business_name          String
+  business_portfolio     String
   status                 ConnectionStatus @default(pending)
+  business_verification_status String?
+  account_review_status String?
+  oba_status          String?
   createdAt              DateTime         @default(now())
   updatedAt              DateTime         @updatedAt
   workspace              Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -153,6 +205,8 @@ model Contact {
   workspace  Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   tags       ContactTag[]
   recipients CampaignRecipient[]
+  leads      Lead[]
+  conversations Conversation[]
 
   @@unique([workspaceId, phone])
 }
@@ -225,6 +279,233 @@ model WalletTransaction {
   workspace    Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 }
 
+model Conversation {
+  id                  String               @id @default(cuid())
+  workspaceId         String
+  contactId           String?
+  phone               String
+  displayName         String
+  status              AppConversationStatus @default(open)
+  source              AppLeadSource        @default(whatsapp_inbound)
+  assignedTo          String?
+  lastMessagePreview  String               @default("")
+  lastMessageAt       DateTime             @default(now())
+  unreadCount         Int                  @default(0)
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  workspace           Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contact             Contact?             @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  messages            ConversationMessage[]
+  notes               ConversationNote[]
+  events              ConversationEvent[]
+  leads               Lead[]
+  automationEvents    AutomationEvent[]
+  flowRuns            AutomationFlowRun[]
+}
+
+model ConversationMessage {
+  id                String              @id @default(cuid())
+  workspaceId       String
+  conversationId    String
+  metaMessageId     String?
+  direction         AppMessageDirection
+  messageType       String              @default("text")
+  body              String              @default("")
+  status            String              @default("received")
+  payload           Json?
+  sentAt            DateTime            @default(now())
+  createdAt         DateTime            @default(now())
+  conversation      Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+}
+
+model ConversationNote {
+  id                String       @id @default(cuid())
+  workspaceId       String
+  conversationId    String
+  body              String       @default("")
+  authorName        String       @default("")
+  createdAt         DateTime     @default(now())
+  conversation      Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+}
+
+model ConversationEvent {
+  id                String       @id @default(cuid())
+  workspaceId       String
+  conversationId    String
+  eventType         String       @default("conversation_updated")
+  summary           String       @default("")
+  actorName         String       @default("")
+  createdAt         DateTime     @default(now())
+  conversation      Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+}
+
+model Lead {
+  id                String        @id @default(cuid())
+  workspaceId       String
+  contactId         String?
+  conversationId    String?
+  metaLeadId        String?       @unique
+  fullName          String
+  phone             String
+  email             String        @default("")
+  status            AppLeadStatus @default(new)
+  source            AppLeadSource @default(manual)
+  sourceLabel       String        @default("")
+  assignedTo        String?
+  notes             String        @default("")
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  workspace         Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contact           Contact?      @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  conversation      Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  automationEvents  AutomationEvent[]
+  flowRuns          AutomationFlowRun[]
+}
+
+model AutomationRule {
+  id                String               @id @default(cuid())
+  workspaceId       String
+  ruleType          AppAutomationRuleType
+  name              String
+  enabled           Boolean              @default(false)
+  config            Json                 @default("{}")
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  workspace         Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, ruleType])
+}
+
+model AutomationEvent {
+  id                String               @id @default(cuid())
+  workspaceId       String
+  ruleType          AppAutomationRuleType
+  conversationId    String?
+  leadId            String?
+  status            String               @default("triggered")
+  summary           String               @default("")
+  payload           Json                 @default("{}")
+  createdAt         DateTime             @default(now())
+  workspace         Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversation      Conversation?        @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  lead              Lead?                @relation(fields: [leadId], references: [id], onDelete: SetNull)
+}
+
+model FailedSendLog {
+  id                String    @id @default(cuid())
+  workspaceId       String
+  channel           String
+  targetType        String
+  targetId          String?
+  destination       String
+  templateName      String?
+  messageBody       String?
+  errorMessage      String
+  status            String    @default("failed")
+  retryCount        Int       @default(0)
+  payload           Json      @default("{}")
+  lastAttemptAt     DateTime  @default(now())
+  resolvedAt        DateTime?
+  createdAt         DateTime  @default(now())
+  workspace         Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+model OperationalLog {
+  id                String    @id @default(cuid())
+  workspaceId       String
+  eventType         String
+  level             String
+  summary           String
+  payload           Json      @default("{}")
+  createdAt         DateTime  @default(now())
+  workspace         Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+model ProcessedWebhookEvent {
+  id                String    @id @default(cuid())
+  fingerprint       String    @unique
+  eventType         String
+  workspaceId       String?
+  createdAt         DateTime  @default(now())
+  workspace         Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+}
+
+model MetaAuthorization {
+  workspaceId       String    @id
+  accessToken       String
+  tokenType         String?
+  expiresAt         DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  workspace         Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+model MetaLeadSourceMapping {
+  id                String    @id @default(cuid())
+  workspaceId       String
+  label             String    @default("")
+  pageId            String?
+  adId              String?
+  formId            String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  workspace         Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+model MetaWebhookEvent {
+  id                String    @id @default(cuid())
+  workspaceId       String?
+  eventType         String
+  payload           Json
+  receivedAt        DateTime  @default(now())
+  workspace         Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+}
+
+model AutomationFlowDefinition {
+  id                String    @id @default(cuid())
+  workspaceId       String
+  name              String
+  description       String?
+  nodes             Json      @default("[]")
+  edges             Json      @default("[]")
+  isActive          Boolean   @default(true)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  workspace         Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  runs              AutomationFlowRun[]
+}
+
+model AutomationFlowRun {
+  id                String    @id @default(cuid())
+  workspaceId       String
+  leadId            String
+  conversationId    String?
+  flowDefinitionId  String?
+  currentNodeId     String?
+  status            String    @default("active")
+  retryCount        Int       @default(0)
+  scheduledAt       DateTime  @default(now())
+  context           Json      @default("{}")
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  workspace         Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  lead              Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  conversation      Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  definition        AutomationFlowDefinition? @relation(fields: [flowDefinitionId], references: [id], onDelete: SetNull)
+}
+
+model LinkClick {
+  id                String    @id @default(cuid())
+  workspaceId       String
+  contactId         String?
+  linkCode          String
+  originalUrl       String
+  ipAddress         String?
+  userAgent         String?
+  clickedAt         DateTime  @default(now())
+  workspace         Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
 model Partner {
   id             String         @id @default(cuid())
   workspaceId    String
@@ -277,3 +558,4 @@ model PartnerPayout {
   partner       Partner        @relation(fields: [partnerId], references: [id], onDelete: Cascade)
   workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 }
+

@@ -28,22 +28,19 @@ export async function getWorkspaceContextFromRequestAuthHeader(authorizationHead
     throw new Error("Supabase user verification failed for Meta persistence.");
   }
 
-  const { data: membership, error: membershipError } = await supabase
-    .from("workspace_members")
-    .select("workspace_id")
-    .eq("user_id", userData.user.id)
-    .maybeSingle();
+  // Lookup the workspace membership in Neon via Prisma instead of Supabase client
+  const { prisma } = await import("./prisma");
+  const user = await prisma.user.findUnique({
+    where: { id: userData.user.id },
+    select: { workspaceId: true },
+  });
 
-  if (membershipError) {
-    throw membershipError;
-  }
-
-  if (!membership?.workspace_id) {
-    throw new Error("No workspace membership found for this Supabase user.");
+  if (!user?.workspaceId) {
+    throw new Error("No workspace membership found for this user in the application database.");
   }
 
   return {
     userId: userData.user.id,
-    workspaceId: membership.workspace_id,
+    workspaceId: user.workspaceId,
   };
 }
