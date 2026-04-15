@@ -1,5 +1,3 @@
-import { supabase } from "@/lib/supabase/client";
-
 export interface MetaLeadSourceMapping {
   id: string;
   label: string;
@@ -10,15 +8,7 @@ export interface MetaLeadSourceMapping {
 }
 
 async function getAuthHeaders() {
-  const session = supabase ? await supabase.auth.getSession() : null;
-  const accessToken = session?.data.session?.access_token;
-
-  if (!accessToken) {
-    throw new Error("A signed-in Supabase session is required.");
-  }
-
   return {
-    Authorization: `Bearer ${accessToken}`,
     "Content-Type": "application/json",
   };
 }

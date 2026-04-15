@@ -2,7 +2,6 @@ import { config } from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { PrismaClient } from '@prisma/client';
-import { Pool } from 'pg';
 import { PrismaPg } from '@prisma/adapter-pg';
 
 // Get file-relative directory path
@@ -24,14 +23,7 @@ if (!connectionString) {
 
 const globalForPrisma = global as unknown as { prisma: PrismaClient };
 
-// Initialize the standard PostgreSQL pool
-// Use rejectUnauthorized: false to ensure SSL connections succeed over Neon pooler
-const pool = new Pool({ 
-  connectionString,
-  ssl: { rejectUnauthorized: false }
-});
-
-const adapter = new PrismaPg(pool);
+const adapter = new PrismaPg(connectionString);
 
 export const prisma =
   globalForPrisma.prisma || new PrismaClient({ adapter });

@@ -236,7 +236,7 @@ async function evaluateCondition(flowRun: FlowRun, data: any): Promise<boolean> 
 
 async function handleFlowMessageSend(flowRun: FlowRun, config: any) {
   const [connection, auth, lead] = await Promise.all([
-    prisma.whatsAppConnection.findUnique({
+    prisma.whatsAppConnection.findFirst({
       where: { workspaceId: flowRun.workspaceId },
       select: { phone_number_id: true },
     }),
@@ -264,7 +264,7 @@ async function handleFlowMessageSend(flowRun: FlowRun, config: any) {
 
 async function handleFlowInteractiveSend(flowRun: FlowRun, config: any) {
   const [connection, auth, lead] = await Promise.all([
-    prisma.whatsAppConnection.findUnique({
+    prisma.whatsAppConnection.findFirst({
       where: { workspaceId: flowRun.workspaceId },
       select: { phone_number_id: true },
     }),

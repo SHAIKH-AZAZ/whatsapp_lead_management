@@ -1,4 +1,3 @@
-import { supabase } from "@/lib/supabase/client";
 import type { ConnectWhatsAppInput } from "@/lib/api/types";
 
 interface MetaExchangeResponse {
@@ -22,15 +21,10 @@ export async function exchangeMetaCodeWithServer(code: string) {
     throw new Error("VITE_API_BASE_URL is required to exchange Meta authorization codes.");
   }
 
-  const session = supabase ? await supabase.auth.getSession() : null;
-
   const response = await fetch(`${baseUrl}/meta/exchange-code`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(session?.data.session?.access_token
-        ? { Authorization: `Bearer ${session.data.session.access_token}` }
-        : {}),
     },
     body: JSON.stringify({
       code,
@@ -57,17 +51,10 @@ export async function sendMetaTemplateWithServer(input: {
     throw new Error("VITE_API_BASE_URL is required to send WhatsApp templates via the backend.");
   }
 
-  const session = supabase ? await supabase.auth.getSession() : null;
-  const accessToken = session?.data.session?.access_token;
-  if (!accessToken) {
-    throw new Error("A signed-in Supabase session is required to send WhatsApp templates.");
-  }
-
   const response = await fetch(`${baseUrl}/meta/send-template`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
     },
     body: JSON.stringify(input),
   });
@@ -90,17 +77,10 @@ export async function sendMetaCampaignWithServer(input: {
     throw new Error("VITE_API_BASE_URL is required to send WhatsApp campaigns via the backend.");
   }
 
-  const session = supabase ? await supabase.auth.getSession() : null;
-  const accessToken = session?.data.session?.access_token;
-  if (!accessToken) {
-    throw new Error("A signed-in Supabase session is required to send WhatsApp campaigns.");
-  }
-
   const response = await fetch(`${baseUrl}/meta/send-campaign`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
     },
     body: JSON.stringify(input),
   });
@@ -123,17 +103,10 @@ export async function sendMetaReplyWithServer(input: {
     throw new Error("VITE_API_BASE_URL is required to send WhatsApp inbox replies.");
   }
 
-  const session = supabase ? await supabase.auth.getSession() : null;
-  const accessToken = session?.data.session?.access_token;
-  if (!accessToken) {
-    throw new Error("A signed-in Supabase session is required to send WhatsApp inbox replies.");
-  }
-
   const response = await fetch(`${baseUrl}/meta/send-reply`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
     },
     body: JSON.stringify(input),
   });

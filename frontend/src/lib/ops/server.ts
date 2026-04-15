@@ -1,4 +1,3 @@
-import { supabase } from "@/lib/supabase/client";
 import type { ActionResult } from "@/lib/api/types";
 
 async function getServerContext() {
@@ -7,16 +6,9 @@ async function getServerContext() {
     throw new Error("VITE_API_BASE_URL is required for operational reliability actions.");
   }
 
-  const session = supabase ? await supabase.auth.getSession() : null;
-  const accessToken = session?.data.session?.access_token;
-  if (!accessToken) {
-    throw new Error("A signed-in Supabase session is required.");
-  }
-
   return {
     baseUrl,
     headers: {
-      Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
     },
   };

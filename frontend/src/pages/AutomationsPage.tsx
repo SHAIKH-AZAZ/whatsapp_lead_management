@@ -51,18 +51,16 @@ export default function AutomationsPage() {
 
     // Fetch custom flows
     const fetchCustomFlows = async () => {
-        try {
-            const token = localStorage.getItem("supabase.auth.token");
-            const res = await fetch("http://localhost:3001/automation/definitions", {
-                headers: { "Authorization": `Bearer ${token}` }
-            });
-            if (res.ok) {
-                const data = await res.json();
-                setCustomFlows(data);
-            }
-        } catch (err) {
-            console.error(err);
+      try {
+        const baseUrl = import.meta.env.VITE_API_BASE_URL?.trim() || "http://localhost:3001";
+        const res = await fetch(`${baseUrl}/automation/definitions`);
+        if (res.ok) {
+          const data = await res.json();
+          setCustomFlows(data);
         }
+      } catch (err) {
+        console.error(err);
+      }
     };
     fetchCustomFlows();
   }, [automations]);

@@ -131,27 +131,26 @@ const WorkflowBuilder = () => {
 
   const handleSave = async () => {
     try {
-        const token = localStorage.getItem("supabase.auth.token"); // Placeholder for real auth
-        const res = await fetch("http://localhost:3001/automation/definitions", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${token}`
-            },
-            body: JSON.stringify({
-                name: "Lead Nurture Flow",
-                nodes,
-                edges,
-            })
-        });
-        if (res.ok) {
-            toast.success("Flow saved successfully!");
-        } else {
-            toast.error("Failed to save flow.");
-        }
+      const baseUrl = import.meta.env.VITE_API_BASE_URL?.trim() || "http://localhost:3001";
+      const res = await fetch(`${baseUrl}/automation/definitions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: "Lead Nurture Flow",
+          nodes,
+          edges,
+        }),
+      });
+      if (res.ok) {
+        toast.success("Flow saved successfully!");
+      } else {
+        toast.error("Failed to save flow.");
+      }
     } catch (err) {
-        console.error(err);
-        toast.error("Error saving flow.");
+      console.error(err);
+      toast.error("Error saving flow.");
     }
   };
 

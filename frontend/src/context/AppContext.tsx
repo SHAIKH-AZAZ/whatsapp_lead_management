@@ -81,7 +81,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     void syncState();
 
-    if (supabase) {
+    if (activeApiAdapter === "supabase" && supabase) {
       const { data } = supabase.auth.onAuthStateChange(() => {
         void syncState();
       });

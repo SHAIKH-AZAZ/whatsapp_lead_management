@@ -41,7 +41,7 @@ import {
   type SummarizedWhatsAppWebhookEvent,
   summarizeMetaWebhookPayload,
 } from "./metaWebhook";
-import { getSupabaseAdmin, getWorkspaceContextFromRequestAuthHeader } from "./supabaseAdmin";
+import { getWorkspaceContextFromRequestAuthHeader } from "./supabaseAdmin";
 
 const app = express();
 const port = Number(process.env.PORT || 3001);
@@ -360,7 +360,7 @@ async function sendWorkspaceAutomationMessage(
 ) {
   const [authorization, connection] = await Promise.all([
     getActiveMetaAuthorization(input.workspaceId),
-    prisma.whatsAppConnection.findUnique({
+    prisma.whatsAppConnection.findFirst({
       where: { workspaceId: input.workspaceId },
       select: { phone_number_id: true },
     }),
@@ -827,7 +827,6 @@ app.get("/health", (_req, res) => {
 app.get("/t/:code", async (req, res) => {
   try {
     const { code } = req.params;
-    const supabase = getSupabaseAdmin();
 
     // Use a hardcoded or dynamic mapping for Phase 2
     // In a real app, we'd lookup in a 'links' table
@@ -916,54 +915,54 @@ app.post("/meta/exchange-code", async (req, res, next) => {
     try {
       const workspaceContext = await getWorkspaceContextFromRequestAuthHeader(req.headers.authorization);
       if (workspaceContext) {
-        await prisma.$transaction([
-          prisma.metaAuthorization.upsert({
-            where: { workspaceId: workspaceContext.workspaceId },
-            update: {
-              accessToken: data.authorization.accessToken,
-              tokenType: data.authorization.tokenType,
-              expiresAt: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
-            },
-            create: {
+        await prisma.metaAuthorization.upsert({
+          where: { workspaceId: workspaceContext.workspaceId },
+          update: {
+            accessToken: data.authorization.accessToken,
+            tokenType: data.authorization.tokenType,
+            expiresAt: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
+          },
+          create: {
+            workspaceId: workspaceContext.workspaceId,
+            accessToken: data.authorization.accessToken,
+            tokenType: data.authorization.tokenType,
+            expiresAt: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
+          },
+        });
+
+        const existingConnection = await prisma.whatsAppConnection.findFirst({
+          where: { workspaceId: workspaceContext.workspaceId },
+          select: { id: true },
+        });
+
+        const connectionData = {
+          metaBusinessId: data.candidate.metaBusinessId,
+          metaBusinessPortfolioId: data.candidate.metaBusinessPortfolioId,
+          wabaId: data.candidate.wabaId,
+          phone_number_id: data.candidate.phoneNumberId,
+          display_phone_number: data.candidate.displayPhoneNumber,
+          verified_name: data.candidate.verifiedName,
+          business_portfolio: data.candidate.businessPortfolio,
+          business_name: data.candidate.businessName,
+          status: ConnectionStatus.connected,
+          business_verification_status: data.candidate.businessVerificationStatus,
+          account_review_status: data.candidate.accountReviewStatus,
+          oba_status: data.candidate.obaStatus,
+        };
+
+        if (existingConnection) {
+          await prisma.whatsAppConnection.update({
+            where: { id: existingConnection.id },
+            data: connectionData,
+          });
+        } else {
+          await prisma.whatsAppConnection.create({
+            data: {
               workspaceId: workspaceContext.workspaceId,
-              accessToken: data.authorization.accessToken,
-              tokenType: data.authorization.tokenType,
-              expiresAt: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
+              ...connectionData,
             },
-          }),
-          prisma.whatsAppConnection.upsert({
-            where: { workspaceId: workspaceContext.workspaceId },
-            update: {
-              metaBusinessId: data.candidate.metaBusinessId,
-              metaBusinessPortfolioId: data.candidate.metaBusinessPortfolioId,
-              wabaId: data.candidate.wabaId,
-              phone_number_id: data.candidate.phoneNumberId,
-              display_phone_number: data.candidate.displayPhoneNumber,
-              verified_name: data.candidate.verifiedName,
-              business_portfolio: data.candidate.businessPortfolio,
-              business_name: data.candidate.businessName,
-              status: ConnectionStatus.connected,
-              business_verification_status: data.candidate.businessVerificationStatus,
-              account_review_status: data.candidate.accountReviewStatus,
-              oba_status: data.candidate.obaStatus,
-            },
-            create: {
-              workspaceId: workspaceContext.workspaceId,
-              metaBusinessId: data.candidate.metaBusinessId,
-              metaBusinessPortfolioId: data.candidate.metaBusinessPortfolioId,
-              wabaId: data.candidate.wabaId,
-              phone_number_id: data.candidate.phoneNumberId,
-              display_phone_number: data.candidate.displayPhoneNumber,
-              verified_name: data.candidate.verifiedName,
-              business_portfolio: data.candidate.businessPortfolio,
-              business_name: data.candidate.businessName,
-              status: ConnectionStatus.connected,
-              business_verification_status: data.candidate.businessVerificationStatus,
-              account_review_status: data.candidate.accountReviewStatus,
-              oba_status: data.candidate.obaStatus,
-            },
-          }),
-        ]);
+          });
+        }
       }
     } catch (persistenceError) {
       console.error("Failed to persist Meta authorization", persistenceError);
@@ -979,7 +978,7 @@ app.get("/meta/source-mappings", async (req, res, next) => {
   try {
     const workspaceContext = await getWorkspaceContextFromRequestAuthHeader(req.headers.authorization);
     if (!workspaceContext) {
-      throw new Error("Supabase authorization is required to load Meta source mappings.");
+      throw new Error("An active app session is required to load Meta source mappings.");
     }
 
     const data = await prisma.metaLeadSourceMapping.findMany({
@@ -997,7 +996,7 @@ app.post("/meta/source-mappings", async (req, res, next) => {
   try {
     const workspaceContext = await getWorkspaceContextFromRequestAuthHeader(req.headers.authorization);
     if (!workspaceContext) {
-      throw new Error("Supabase authorization is required to save Meta source mappings.");
+      throw new Error("An active app session is required to save Meta source mappings.");
     }
 
     const payload = metaLeadSourceMappingSchema.parse(req.body);
@@ -1028,13 +1027,13 @@ app.post("/meta/send-template", async (req, res, next) => {
     payload = metaSendTemplateSchema.parse(req.body);
     const workspaceContext = await getWorkspaceContextFromRequestAuthHeader(req.headers.authorization);
     if (!workspaceContext) {
-      throw new Error("Supabase authorization is required to send WhatsApp templates.");
+      throw new Error("An active app session is required to send WhatsApp templates.");
     }
     workspaceId = workspaceContext.workspaceId;
 
     const [authorization, connection] = await Promise.all([
       getActiveMetaAuthorization(workspaceContext.workspaceId),
-      prisma.whatsAppConnection.findUnique({
+      prisma.whatsAppConnection.findFirst({
         where: { workspaceId: workspaceContext.workspaceId },
         select: { phone_number_id: true },
       }),
@@ -1093,12 +1092,12 @@ app.post("/meta/send-campaign", async (req, res, next) => {
     const payload = metaSendCampaignSchema.parse(req.body);
     const workspaceContext = await getWorkspaceContextFromRequestAuthHeader(req.headers.authorization);
     if (!workspaceContext) {
-      throw new Error("Supabase authorization is required to send WhatsApp campaigns.");
+      throw new Error("An active app session is required to send WhatsApp campaigns.");
     }
 
     const [authorization, connection, template, contacts] = await Promise.all([
       getActiveMetaAuthorization(workspaceContext.workspaceId),
-      prisma.whatsAppConnection.findUnique({
+      prisma.whatsAppConnection.findFirst({
         where: { workspaceId: workspaceContext.workspaceId },
         select: { phone_number_id: true },
       }),
@@ -1222,13 +1221,13 @@ app.post("/meta/send-reply", async (req, res, next) => {
     payload = metaReplySchema.parse(req.body);
     const workspaceContext = await getWorkspaceContextFromRequestAuthHeader(req.headers.authorization);
     if (!workspaceContext) {
-      throw new Error("Supabase authorization is required to send WhatsApp replies.");
+      throw new Error("An active app session is required to send WhatsApp replies.");
     }
     workspaceId = workspaceContext.workspaceId;
 
     const [authorization, connection, conversation] = await Promise.all([
       getActiveMetaAuthorization(workspaceContext.workspaceId),
-      prisma.whatsAppConnection.findUnique({
+      prisma.whatsAppConnection.findFirst({
         where: { workspaceId: workspaceContext.workspaceId },
         select: { phone_number_id: true },
       }),
@@ -1329,7 +1328,7 @@ app.post("/automation/process-reminders", async (req, res, next) => {
   try {
     const workspaceContext = await getWorkspaceContextFromRequestAuthHeader(req.headers.authorization);
     if (!workspaceContext) {
-      throw new Error("Supabase authorization is required to process automation reminders.");
+      throw new Error("An active app session is required to process automation reminders.");
     }
 
     const reminderRule = await getEnabledAutomationRule(workspaceContext.workspaceId, AppAutomationRuleType.no_reply_reminder);
@@ -1524,7 +1523,7 @@ app.post("/automation/lead-contacted", async (req, res, next) => {
     const payload = automationLeadContactedSchema.parse(req.body);
     const workspaceContext = await getWorkspaceContextFromRequestAuthHeader(req.headers.authorization);
     if (!workspaceContext) {
-      throw new Error("Supabase authorization is required to process contacted-lead automation.");
+      throw new Error("An active app session is required to process contacted-lead automation.");
     }
 
     const followUpRule = await getEnabledAutomationRule(workspaceContext.workspaceId, AppAutomationRuleType.follow_up_after_contacted);
@@ -1638,7 +1637,7 @@ app.post("/automation/lead-contacted", async (req, res, next) => {
         },
       });
     } catch (error) {
-      await logFailedSend(supabase, {
+      await logFailedSend({
         workspaceId: workspaceContext.workspaceId,
         channel: "automation",
         targetType: "lead",
@@ -1651,13 +1650,13 @@ app.post("/automation/lead-contacted", async (req, res, next) => {
           conversationId,
         },
       });
-      await logAutomationEvent(supabase, {
+      await logAutomationEvent({
         workspaceId: workspaceContext.workspaceId,
         ruleType: "follow_up_after_contacted",
         conversationId,
         leadId: lead.id,
         status: "failed",
-        summary: `Contacted follow-up failed for ${lead.full_name}.`,
+        summary: `Contacted follow-up failed for ${lead.fullName}.`,
         payload: {
           message: error instanceof Error ? error.message : "Unknown automation error",
         },
@@ -1676,24 +1675,26 @@ app.post("/ops/retry-failed-send", async (req, res, next) => {
     const payload = retryFailedSendSchema.parse(req.body);
     const workspaceContext = await getWorkspaceContextFromRequestAuthHeader(req.headers.authorization);
     if (!workspaceContext) {
-      throw new Error("Supabase authorization is required to retry failed sends.");
+      throw new Error("An active app session is required to retry failed sends.");
     }
 
-    const supabase = getSupabaseAdmin();
-    const { data: failedLog } = await supabase
-      .from("failed_send_logs")
-      .select("id, workspace_id, channel, target_type, target_id, destination, template_name, message_body, payload, retry_count")
-      .eq("workspace_id", workspaceContext.workspaceId)
-      .eq("id", payload.failedSendLogId)
-      .maybeSingle();
+    const failedLog = await prisma.failedSendLog.findFirst({
+      where: {
+        workspaceId: workspaceContext.workspaceId,
+        id: payload.failedSendLogId,
+      },
+    });
 
     if (!failedLog) {
       throw new Error("Failed send log not found for this workspace.");
     }
 
-    const [authorization, { data: connection }] = await Promise.all([
-      getActiveMetaAuthorization(supabase, workspaceContext.workspaceId),
-      supabase.from("whatsapp_connections").select("phone_number_id").eq("workspace_id", workspaceContext.workspaceId).maybeSingle(),
+    const [authorization, connection] = await Promise.all([
+      getActiveMetaAuthorization(workspaceContext.workspaceId),
+      prisma.whatsAppConnection.findFirst({
+        where: { workspaceId: workspaceContext.workspaceId },
+        select: { phone_number_id: true },
+      }),
     ]);
 
     if (!connection?.phone_number_id) {
@@ -1706,23 +1707,23 @@ app.post("/ops/retry-failed-send", async (req, res, next) => {
 
     if (failedLog.channel === "campaign" || failedLog.channel === "template") {
       await sendMetaTemplateMessage({
-        accessToken: authorization.access_token,
+        accessToken: authorization.accessToken,
         phoneNumberId: connection.phone_number_id,
         to: failedLog.destination,
-        templateName: failedLog.template_name ?? String(payloadData.templateName ?? ""),
+        templateName: failedLog.templateName ?? String(payloadData.templateName ?? ""),
         languageCode: String(payloadData.languageCode ?? "en"),
         bodyParameters: Array.isArray(payloadData.bodyParameters)
           ? payloadData.bodyParameters.filter((value): value is string => typeof value === "string")
           : [],
       });
     } else {
-      const replyBody = failedLog.message_body ?? String(payloadData.body ?? "");
+      const replyBody = failedLog.messageBody ?? String(payloadData.body ?? "");
       if (!replyBody.trim()) {
         throw new Error("No retry payload body was stored for this failed send.");
       }
 
       const providerResponse = await sendMetaTextMessage({
-        accessToken: authorization.access_token,
+        accessToken: authorization.accessToken,
         phoneNumberId: connection.phone_number_id,
         to: failedLog.destination,
         body: replyBody,
@@ -1737,50 +1738,49 @@ app.post("/ops/retry-failed-send", async (req, res, next) => {
 
       if (conversationId) {
         await Promise.all([
-          supabase.from("conversation_messages").insert({
-            workspace_id: workspaceContext.workspaceId,
-            conversation_id: conversationId,
-            meta_message_id: messageId,
-            direction: "outbound",
-            message_type: "text",
-            body: replyBody,
-            status: "sent",
-            payload: providerResponse,
-            sent_at: sentAt,
+          prisma.conversationMessage.create({
+            data: {
+              workspaceId: workspaceContext.workspaceId,
+              conversationId,
+              metaMessageId: messageId,
+              direction: AppMessageDirection.outbound,
+              messageType: "text",
+              body: replyBody,
+              status: "sent",
+              payload: providerResponse as any,
+              sentAt: new Date(sentAt),
+            },
           }),
-          supabase
-            .from("conversations")
-            .update({
-              last_message_preview: replyBody,
-              last_message_at: sentAt,
-              status: "open",
-            })
-            .eq("workspace_id", workspaceContext.workspaceId)
-            .eq("id", conversationId),
+          prisma.conversation.update({
+            where: { id: conversationId },
+            data: {
+              lastMessagePreview: replyBody,
+              lastMessageAt: new Date(sentAt),
+              status: AppConversationStatus.open,
+            },
+          }),
         ]);
       }
 
       if (leadId) {
-        await supabase
-          .from("leads")
-          .update({ updated_at: sentAt })
-          .eq("workspace_id", workspaceContext.workspaceId)
-          .eq("id", leadId);
+        await prisma.lead.update({
+          where: { id: leadId },
+          data: { updatedAt: new Date(sentAt) },
+        });
       }
     }
 
     await Promise.all([
-      supabase
-        .from("failed_send_logs")
-        .update({
+      prisma.failedSendLog.update({
+        where: { id: failedLog.id },
+        data: {
           status: "resolved",
-          retry_count: (failedLog.retry_count ?? 0) + 1,
-          last_attempt_at: new Date().toISOString(),
-          resolved_at: new Date().toISOString(),
-        })
-        .eq("workspace_id", workspaceContext.workspaceId)
-        .eq("id", failedLog.id),
-      logOperationalEvent(supabase, {
+          retryCount: (failedLog.retryCount ?? 0) + 1,
+          lastAttemptAt: new Date(),
+          resolvedAt: new Date(),
+        },
+      }),
+      logOperationalEvent({
         workspaceId: workspaceContext.workspaceId,
         eventType: "failed_send_retried",
         level: "info",
@@ -1803,25 +1803,24 @@ app.post("/ops/retry-failed-send", async (req, res, next) => {
       const payload = retryFailedSendSchema.safeParse(req.body);
       const workspaceContext = await getWorkspaceContextFromRequestAuthHeader(req.headers.authorization);
       if (payload.success && workspaceContext) {
-        const supabase = getSupabaseAdmin();
-        const { data: failedLog } = await supabase
-          .from("failed_send_logs")
-          .select("id, retry_count")
-          .eq("workspace_id", workspaceContext.workspaceId)
-          .eq("id", payload.data.failedSendLogId)
-          .maybeSingle();
+        const failedLog = await prisma.failedSendLog.findFirst({
+          where: {
+            workspaceId: workspaceContext.workspaceId,
+            id: payload.data.failedSendLogId,
+          },
+          select: { id: true, retryCount: true },
+        });
 
         if (failedLog) {
           await Promise.all([
-            supabase
-              .from("failed_send_logs")
-              .update({
-                retry_count: (failedLog.retry_count ?? 0) + 1,
-                last_attempt_at: new Date().toISOString(),
-              })
-              .eq("workspace_id", workspaceContext.workspaceId)
-              .eq("id", failedLog.id),
-            logOperationalEvent(supabase, {
+            prisma.failedSendLog.update({
+              where: { id: failedLog.id },
+              data: {
+                retryCount: (failedLog.retryCount ?? 0) + 1,
+                lastAttemptAt: new Date(),
+              },
+            }),
+            logOperationalEvent({
               workspaceId: workspaceContext.workspaceId,
               eventType: "failed_send_retry_failed",
               level: "error",
@@ -1915,9 +1914,9 @@ app.post("/whatsapp/connect", async (req, res, next) => {
       await prisma.whatsAppConnection.update({
         where: { id: existing.id },
         data: {
-          businessPortfolio: payload.businessPortfolio,
-          businessName: payload.businessName,
-          phoneNumber: payload.phoneNumber,
+          business_portfolio: payload.businessPortfolio,
+          business_name: payload.businessName,
+          display_phone_number: payload.phoneNumber,
           status: ConnectionStatus.connected,
         },
       });
@@ -1925,9 +1924,9 @@ app.post("/whatsapp/connect", async (req, res, next) => {
       await prisma.whatsAppConnection.create({
         data: {
           workspaceId: user.workspaceId,
-          businessPortfolio: payload.businessPortfolio,
-          businessName: payload.businessName,
-          phoneNumber: payload.phoneNumber,
+          business_portfolio: payload.businessPortfolio,
+          business_name: payload.businessName,
+          display_phone_number: payload.phoneNumber,
           status: ConnectionStatus.connected,
         },
       });
@@ -2443,6 +2442,7 @@ app.post("/partners/referrals", async (req, res, next) => {
     const referral = await prisma.partnerReferral.create({
       data: {
         partnerId: partner.id,
+        workspaceId: partner.workspaceId,
         referredEmail: payload.referredEmail,
         status: "pending",
       },
@@ -2510,9 +2510,10 @@ app.post("/partners/payouts/request", async (req, res, next) => {
     const payout = await prisma.partnerPayout.create({
       data: {
         partnerId: partner.id,
+        workspaceId: partner.workspaceId,
         amount: payload.amount,
         paymentMethod: payload.paymentMethod,
-        paymentDetails: payload.paymentDetails,
+        paymentDetails: JSON.stringify(payload.paymentDetails),
         status: "pending",
       },
     });
