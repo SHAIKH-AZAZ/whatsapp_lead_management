@@ -45,7 +45,7 @@ Since the Vercel free plan does not support cron jobs, I have added a GitHub Act
     VITE_SUPABASE_URL=your_supabase_url
     VITE_SUPABASE_ANON_KEY=your_anon_key
     ```
-2.  **Build**: `npm run build`.
+2.  **Build**: `bun run build`.
 3.  **Deploy**: Upload the `dist/` folder to your frontend host (Vercel/Nginx).
 
 ## 5. Meta Webhook Configuration

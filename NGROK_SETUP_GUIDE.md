@@ -21,7 +21,7 @@ Go to your **Meta App Dashboard** -> **WhatsApp** -> **Configuration**:
 - **Verify Token**: `wabiz_automation_secret`
 
 ### 4. Run the Test Scripts
-Once Ngrok is running and your server is active (`npm run dev`), open a new terminal and run:
+Once Ngrok is running and your server is active (`bun run dev:backend`), open a new terminal and run:
 
 **Test Lead Capture (Phase 1):**
 ```bash

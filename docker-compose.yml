@@ -23,7 +23,7 @@ services:
   backend:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: backend/Dockerfile
     container_name: whatsappfly-backend
     environment:
       - PORT=3001
@@ -40,7 +40,7 @@ services:
       - db
       - redis
     # Run Prisma migrations on startup
-    command: sh -c "npx prisma db push && npm run server:start"
+    command: sh -c "bun run prisma:push && bun run start"
 
   # 4. Frontend (The React App served by Nginx)
   frontend:

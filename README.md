@@ -16,7 +16,8 @@ WhatsApp Business SaaS dashboard for Shopify stores, D2C brands, and local busin
    `VITE_SUPABASE_URL`
    `VITE_SUPABASE_ANON_KEY`
 4. Set `VITE_API_ADAPTER=supabase`.
-5. Run `npm run dev`.
+5. Run `bun install`.
+6. Run `bun run dev`.
 
 ## Current Adapters
 

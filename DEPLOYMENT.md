@@ -25,7 +25,7 @@ We have migrated from SQLite to PostgreSQL. To initialize your Supabase producti
 1.  Retrieve your **Postgres Connection String** from Supabase Settings > Database.
 2.  Run the following command locally:
     ```bash
-    DATABASE_URL="your_supabase_connection_string" npx prisma db push
+    DATABASE_URL="your_supabase_connection_string" bunx prisma db push
     ```
 
 ---
@@ -65,6 +65,6 @@ We have migrated from SQLite to PostgreSQL. To initialize your Supabase producti
 ---
 
 ## 6. Development Commands
-- `npm run dev`: Start Vite development server.
-- `npm run server:dev`: Start local Express server (requires `DATABASE_URL`).
-- `npx prisma generate`: Update Prisma Client after schema changes.
+- `bun run dev`: Start frontend and backend together.
+- `bun run dev:backend`: Start the local Express server only (requires `DATABASE_URL`).
+- `bunx prisma generate`: Update Prisma Client after schema changes.
