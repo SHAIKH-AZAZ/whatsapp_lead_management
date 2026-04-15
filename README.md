@@ -25,14 +25,14 @@ Use the repository root as the Railway service source. This project builds the b
 
 ### Railway Settings
 
-Add these service variables in Railway:
+This repository includes `railway.json`, which already tells Railway to:
 
-- `RAILWAY_DOCKERFILE_PATH=backend/Dockerfile`
+- build with `backend/Dockerfile`
+- use `/health` as the deployment health check
+
+Add this service variable in Railway:
+
 - `DATABASE_URL=<your Neon connection string>`
-
-Set the Railway health check path to:
-
-- `/health`
 
 Notes:
 

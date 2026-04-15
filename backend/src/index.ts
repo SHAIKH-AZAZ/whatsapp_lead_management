@@ -45,6 +45,50 @@ import { getWorkspaceContextFromRequestAuthHeader } from "./supabaseAdmin";
 
 const app = express();
 const port = Number(process.env.PORT || 3001);
+const startupRetryDelaysMs = [1000, 2000, 5000, 10000];
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientDatabaseStartupError(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+
+  const code = "code" in error ? String(error.code) : "";
+  const message = error instanceof Error ? error.message : String(error);
+
+  return (
+    code === "EAI_AGAIN" ||
+    code === "P1001" ||
+    message.includes("EAI_AGAIN") ||
+    message.includes("Can't reach database server") ||
+    message.includes("Temporary failure in name resolution")
+  );
+}
+
+async function ensureSessionWithRetry() {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= startupRetryDelaysMs.length; attempt += 1) {
+    try {
+      return await ensureSession(prisma);
+    } catch (error) {
+      lastError = error;
+
+      if (!isTransientDatabaseStartupError(error) || attempt === startupRetryDelaysMs.length) {
+        throw error;
+      }
+
+      const delayMs = startupRetryDelaysMs[attempt];
+      console.warn(
+        `Database not reachable during startup (attempt ${attempt + 1}/${startupRetryDelaysMs.length + 1}). Retrying in ${delayMs}ms...`,
+      );
+      await sleep(delayMs);
+    }
+  }
+
+  throw lastError;
+}
 
 app.use(cors({
   origin: true,
@@ -2613,7 +2657,7 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
   res.status(500).json({ message: "Unexpected server error." });
 });
 
-ensureSession(prisma)
+ensureSessionWithRetry()
   .then(() => {
     app.listen(port, () => {
       console.log(`WaBiz API listening on http://localhost:${port}`);
