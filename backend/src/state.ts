@@ -159,7 +159,10 @@ export async function getCurrentUser(prisma: PrismaClient) {
   return session?.currentUser ?? null;
 }
 
-export async function createWorkspaceForUser(prisma: PrismaClient, input: { name: string; email: string }) {
+export async function createWorkspaceForUser(
+  prisma: PrismaClient,
+  input: { name: string; email: string; passwordHash?: string | null },
+) {
   const workspace = await prisma.workspace.create({
     data: {
       name: `${input.name}'s Workspace`,
@@ -167,6 +170,7 @@ export async function createWorkspaceForUser(prisma: PrismaClient, input: { name
         create: {
           name: input.name,
           email: input.email,
+          passwordHash: input.passwordHash ?? null,
         },
       },
     },
@@ -179,18 +183,6 @@ export async function createWorkspaceForUser(prisma: PrismaClient, input: { name
   await seedWorkspace(prisma, workspace.id);
   await setCurrentUser(prisma, user.id);
   return user;
-}
-
-export async function findOrCreateUserByEmail(prisma: PrismaClient, email: string) {
-  const existing = await prisma.user.findUnique({ where: { email } });
-  if (existing) {
-    await setCurrentUser(prisma, existing.id);
-    return existing;
-  }
-
-  const fallbackName = email.split("@")[0].replace(/[._-]/g, " ");
-  const name = fallbackName.replace(/\b\w/g, (char) => char.toUpperCase());
-  return createWorkspaceForUser(prisma, { name, email });
 }
 
 export async function seedWorkspace(prisma: PrismaClient, workspaceId: string) {

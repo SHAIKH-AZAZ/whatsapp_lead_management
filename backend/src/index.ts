@@ -14,13 +14,13 @@ import {
   AppLeadSource
 } from "@prisma/client";
 import { z } from "zod";
+import { hashPassword, verifyPassword } from "./auth";
 import { COST_PER_MESSAGE } from "./sharedTypes";
 import { prisma } from "./prisma";
 import {
   buildAppState,
   createWorkspaceForUser,
   ensureSession,
-  findOrCreateUserByEmail,
   getCurrentUser,
   seedWorkspace,
   setCurrentUser,
@@ -96,13 +96,15 @@ app.use(cors({
 }));
 app.use(express.json());
 
-const emailSchema = z.object({
+const signInSchema = z.object({
   email: z.string().email(),
+  password: z.string().min(1),
 });
 
 const signUpSchema = z.object({
   name: z.string().min(1),
   email: z.string().email(),
+  password: z.string().min(8, "Password must be at least 8 characters long."),
 });
 
 const connectWhatsAppSchema = z.object({
@@ -1923,8 +1925,15 @@ app.get("/app-state", async (_req, res, next) => {
 
 app.post("/session", async (req, res, next) => {
   try {
-    const { email } = emailSchema.parse(req.body);
-    const user = await findOrCreateUserByEmail(prisma, email);
+    const { email, password } = signInSchema.parse(req.body);
+    const user = await prisma.user.findUnique({ where: { email } });
+    const isValidPassword = user?.passwordHash ? verifyPassword(password, user.passwordHash) : false;
+
+    if (!user || !isValidPassword) {
+      throw new Error("Invalid login credentials.");
+    }
+
+    await setCurrentUser(prisma, user.id);
     const data = await buildAppState(prisma, user);
     res.json({ data });
   } catch (error) {
@@ -1934,9 +1943,24 @@ app.post("/session", async (req, res, next) => {
 
 app.post("/auth/signup", async (req, res, next) => {
   try {
-    const { name, email } = signUpSchema.parse(req.body);
+    const { name, email, password } = signUpSchema.parse(req.body);
     const existing = await prisma.user.findUnique({ where: { email } });
-    const user = existing ?? await createWorkspaceForUser(prisma, { name, email });
+    const passwordHash = hashPassword(password);
+
+    if (existing?.passwordHash) {
+      throw new Error("User already registered.");
+    }
+
+    const user = existing
+      ? await prisma.user.update({
+          where: { id: existing.id },
+          data: {
+            name,
+            passwordHash,
+          },
+        })
+      : await createWorkspaceForUser(prisma, { name, email, passwordHash });
+
     await setCurrentUser(prisma, user.id);
     const data = await buildAppState(prisma, user);
     res.json({ data });

@@ -160,6 +160,7 @@ model User {
   workspaceId        String
   name               String
   email              String       @unique
+  passwordHash       String?
   onboardingComplete Boolean      @default(false)
   createdAt          DateTime     @default(now())
   updatedAt          DateTime     @updatedAt
@@ -558,4 +559,3 @@ model PartnerPayout {
   partner       Partner        @relation(fields: [partnerId], references: [id], onDelete: Cascade)
   workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 }
-
